@@ -8,12 +8,15 @@ from pathlib import Path
 from .models import Options
 from .pipeline import run_pipeline
 from .report import write_reports
+from .extract import extract_gdb_tree
 
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Auto-detect & merge Shapefile RBI per kategori (nama layer).")
     p.add_argument("--input", required=True, help="folder sumber")
     p.add_argument("--output", required=True, help="folder hasil")
+    p.add_argument("--extract-gdb", action="store_true",
+                   help="pecah layer dari GDB langsung atau dari GDB di dalam ZIP menjadi file GDB terpisah")
     p.add_argument("--dry-run", action="store_true", help="hanya deteksi & tampilkan rencana")
     p.add_argument("--overwrite", action="store_true", help="izinkan mengganti output yang sesuai")
     p.add_argument("--target-crs", help="CRS target (mis. EPSG:4326); tanpa ini tidak ada transformasi")
@@ -72,6 +75,20 @@ def main(argv=None) -> int:
     logging.basicConfig(level=logging.DEBUG if a.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)s %(message)s")
     inp, out = Path(a.input), Path(a.output)
+    if a.extract_gdb:
+        if not inp.exists():
+            parser.error(f"input tidak ditemukan: {inp}")
+        if not inp.is_dir() and inp.suffix.casefold() not in {".gdb", ".zip"}:
+            parser.error("--extract-gdb membutuhkan folder, folder .gdb, atau file .zip")
+        results = extract_gdb_tree(inp, out, overwrite=a.overwrite, dry_run=a.dry_run,
+                                   categories=a.category, chunk_size=a.chunk_size)
+        for name, count, path in results:
+            print(f"{name}: {count} fitur -> {path}")
+        if a.dry_run:
+            print("DRY-RUN: tidak ada file yang ditulis.")
+        else:
+            print(f"Selesai: {len(results)} layer diekstrak.")
+        return 0
     if not inp.is_dir():
         parser.error(f"folder input tidak ditemukan: {inp}")
     o = Options(input_dir=inp, output_dir=out, dry_run=a.dry_run, overwrite=a.overwrite,

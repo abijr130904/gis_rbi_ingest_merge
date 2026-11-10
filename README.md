@@ -45,6 +45,26 @@ python -m pytest tests -q
 
 Program ini menggabungkan file Shapefile berdasarkan nama kategori. Jalankan `python merge_shp.py --help` untuk melihat opsi yang tersedia.
 
+### Ekstrak layer GDB langsung dari ZIP
+
+Gunakan `--extract-gdb` untuk menyimpan setiap layer spasial sebagai file `.gdb` terpisah. GDB yang berada di dalam ZIP dibaca langsung oleh GDAL, tanpa mengekstrak isi ZIP ke disk.
+
+```powershell
+# Pindai folder sumber beserta subfoldernya
+python .\merge_shp.py --input "G:\INAGEOPORTAL_FULL\Maluku Utara 50k" `
+  --output "G:\INAGEOPORTAL_FULL\ekstrak_gdb\Maluku Utara 50k" --extract-gdb --dry-run
+
+# Jalankan ekstraksi
+python .\merge_shp.py --input "G:\INAGEOPORTAL_FULL\Maluku Utara 50k" `
+  --output "G:\INAGEOPORTAL_FULL\ekstrak_gdb\Maluku Utara 50k" --extract-gdb
+
+# Bisa juga berikan satu ZIP langsung
+python .\merge_shp.py --input "G:\INAGEOPORTAL_FULL\data.zip" `
+  --output "G:\INAGEOPORTAL_FULL\ekstrak_gdb" --extract-gdb
+```
+
+Hasil dari ZIP disimpan di subfolder bernama ZIP, mengikuti struktur folder GDB di dalam arsip. Penulisan output membutuhkan driver GDAL `OpenFileGDB` yang mendukung write.
+
 ### Ekstrak arsip ZIP/RAR
 
 `ekstrak_arsip.py` mencari arsip di folder sumber dan subfoldernya. Secara bawaan hasil masuk ke folder `hasil_ekstrak` di dalam folder sumber.
