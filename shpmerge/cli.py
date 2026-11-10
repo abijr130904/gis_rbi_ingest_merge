@@ -11,20 +11,9 @@ from .report import write_reports
 
 
 def build_parser() -> argparse.ArgumentParser:
-<<<<<<< HEAD
     p = argparse.ArgumentParser(description="Auto-detect & merge Shapefile RBI per kategori (nama layer).")
     p.add_argument("--input", required=True, help="folder sumber")
     p.add_argument("--output", required=True, help="folder hasil")
-=======
-    p = argparse.ArgumentParser(description="Auto-detect & merge Shapefile/GDB RBI per kategori (nama layer).")
-    p.add_argument("--input", help="folder sumber (.shp/.gdb/ZIP/RAR) atau satu GDB/arsip")
-    p.add_argument("--output",
-                   help="folder hasil; tiap kategori menjadi NAMA.gdb (atau NAMA.shp) di dalamnya")
-    p.add_argument("--output-format", choices=["gdb", "shp"], default="gdb",
-                   help="format keluaran: gdb (File Geodatabase, tanpa batas 2 GB) atau shp (bawaan lama)")
-    p.add_argument("--extract-gdb", action="store_true",
-                   help="ekstrak setiap layer GDB; input boleh satu .gdb atau folder yang dipindai rekursif")
->>>>>>> 84c4ee6 (fix : read zip)
     p.add_argument("--dry-run", action="store_true", help="hanya deteksi & tampilkan rencana")
     p.add_argument("--overwrite", action="store_true", help="izinkan mengganti output yang sesuai")
     p.add_argument("--target-crs", help="CRS target (mis. EPSG:4326); tanpa ini tidak ada transformasi")
@@ -82,43 +71,9 @@ def main(argv=None) -> int:
     a = parser.parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if a.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)s %(message)s")
-<<<<<<< HEAD
     inp, out = Path(a.input), Path(a.output)
     if not inp.is_dir():
         parser.error(f"folder input tidak ditemukan: {inp}")
-=======
-    if a.extract_gdb:
-        if a.input:
-            inp = Path(a.input)
-        else:
-            data25k = Path("data25k")
-            inp = data25k if data25k.is_dir() else Path.cwd()
-        out = Path(a.output) if a.output else (
-            inp.parent if inp.suffix.casefold() in {".zip", ".rar"} else inp
-        )
-    else:
-        if not a.input or not a.output:
-            parser.error("--input dan --output wajib diisi kecuali saat memakai --extract-gdb")
-        inp, out = Path(a.input), Path(a.output)
-    if not inp.exists():
-        parser.error(f"input tidak ditemukan: {inp}")
-    if out.suffix.lower() in (".gdb", ".shp"):
-        parser.error("--output harus berupa FOLDER; tiap kategori menjadi NAMA.gdb di dalamnya")
-    if a.extract_gdb:
-        if not inp.is_dir() and inp.suffix.casefold() not in {".gdb", ".zip", ".rar"}:
-            parser.error("--extract-gdb membutuhkan folder, GDB, ZIP, atau RAR")
-        if a.output_format != "gdb":
-            parser.error("--extract-gdb hanya mendukung keluaran .gdb")
-        results = extract_gdb_tree(inp, out, overwrite=a.overwrite, dry_run=a.dry_run,
-                                   categories=a.category, chunk_size=a.chunk_size)
-        for name, count, path in results:
-            print(f"{name}: {count} fitur -> {path}")
-        if a.dry_run:
-            print("DRY-RUN: tidak ada file yang ditulis.")
-        else:
-            print(f"Selesai: {len(results)} kategori diekstrak.")
-        return 0
->>>>>>> 84c4ee6 (fix : read zip)
     o = Options(input_dir=inp, output_dir=out, dry_run=a.dry_run, overwrite=a.overwrite,
                 target_crs=a.target_crs, include_single=a.include_single,
                 add_source_fields=a.add_source_fields,
