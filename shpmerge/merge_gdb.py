@@ -56,6 +56,8 @@ def _write_group(g: Group, o: Options, temporary: Path) -> int:
                         frame[name] = frame[name].astype("Int64") if frame[name].isna().any() else frame[name].astype("int64")
                     elif fam == "float":
                         frame[name] = frame[name].astype("float64")
+                    elif fam == "text":
+                        frame[name] = frame[name].astype("string")
                 columns = [name for name, _ in g.schema]
                 if o.add_source_fields:
                     frame["SRC_REGION"] = sf.region_hint[:254]

@@ -35,6 +35,16 @@ def family(dtype: str) -> str:
     return "text"
 
 
+def _promote_family(left: str, right: str) -> str:
+    """Choose a loss-minimizing common field family for schema union."""
+    if left == right:
+        return left
+    if {left, right} <= {"int", "float"}:
+        return "float"
+    # Text can represent values from every supported attribute family.
+    return "text"
+
+
 def inspect_file(sf: SourceFile, encoding: str | None = None) -> None:
     miss = missing_components(sf.path, sf.components)
     if miss:
@@ -117,9 +127,10 @@ def validate_group(g: Group, o: Options) -> Group:
     union: dict[str, str] = {}
     for f in g.files:
         for n, d in f.schema:
-            union.setdefault(n, family(d))
+            fam = family(d)
+            union[n] = _promote_family(union[n], fam) if n in union else fam
     ref = g.files[0]
-    diffs, hard = [], False
+    diffs, type_promotions, hard = [], [], False
     for f in g.files:
         if o.strict_schema and f.schema != ref.schema:
             diffs.append(f"{f.rel}: skema tidak identik dengan {ref.rel}")
@@ -127,13 +138,17 @@ def validate_group(g: Group, o: Options) -> Group:
             continue
         fam = {n: family(d) for n, d in f.schema}
         missing = [n for n in union if n not in fam]
-        conflict = [n for n in fam if fam[n] != union[n]]
-        if missing or conflict:
-            diffs.append(f"{f.rel}: kolom hilang={missing} konflik tipe={conflict}")
-            hard = hard or bool(conflict)
+        promoted = [n for n in fam if fam[n] != union[n]]
+        if missing or promoted:
+            diffs.append(f"{f.rel}: kolom hilang={missing} promosi_tipe={promoted}")
+            if promoted:
+                type_promotions.extend(promoted)
     if diffs:
         if o.allow_schema_union and not hard:
-            g.warnings.append("SKEMA_UNION: kolom hilang diisi NULL -> " + " | ".join(diffs))
+            details = "SKEMA_UNION: kolom hilang diisi NULL"
+            if type_promotions:
+                details += "; tipe dipromosikan (int+float -> float, konflik lain -> text)"
+            g.warnings.append(details + " -> " + " | ".join(diffs))
         else:
             problems.append("SKEMA_BERBEDA: " + " | ".join(diffs))
     g.schema = list(union.items())

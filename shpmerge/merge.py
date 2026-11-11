@@ -36,6 +36,8 @@ def _cast(s: pd.Series, fam: str) -> pd.Series:
         return num.astype("int64") if not num.isna().any() else num.astype("Int64")
     if fam == "float":
         return pd.to_numeric(s).astype("float64")
+    if fam == "text":
+        return s.astype("string")
     return s
 
 
