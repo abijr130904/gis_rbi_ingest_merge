@@ -13,10 +13,10 @@ from .extract import extract_gdb_tree
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Auto-detect & merge Shapefile RBI per kategori (nama layer).")
-    p.add_argument("--input", required=True, help="folder sumber")
+    p.add_argument("--input", required=True, help="folder sumber atau satu ZIP berisi Shapefile")
     p.add_argument("--output", required=True, help="folder hasil")
     p.add_argument("--extract-gdb", action="store_true",
-                   help="pecah layer dari GDB langsung atau dari GDB di dalam ZIP menjadi file GDB terpisah")
+                   help="tulis layer GDB atau sumber SHP langsung/di dalam ZIP/RAR sebagai file GDB")
     p.add_argument("--dry-run", action="store_true", help="hanya deteksi & tampilkan rencana")
     p.add_argument("--overwrite", action="store_true", help="izinkan mengganti output yang sesuai")
     p.add_argument("--target-crs", help="CRS target (mis. EPSG:4326); tanpa ini tidak ada transformasi")
@@ -78,10 +78,13 @@ def main(argv=None) -> int:
     if a.extract_gdb:
         if not inp.exists():
             parser.error(f"input tidak ditemukan: {inp}")
-        if not inp.is_dir() and inp.suffix.casefold() not in {".gdb", ".zip"}:
-            parser.error("--extract-gdb membutuhkan folder, folder .gdb, atau file .zip")
-        results = extract_gdb_tree(inp, out, overwrite=a.overwrite, dry_run=a.dry_run,
-                                   categories=a.category, chunk_size=a.chunk_size)
+        if not inp.is_dir() and inp.suffix.casefold() not in {".gdb", ".shp", ".zip", ".rar"}:
+            parser.error("--extract-gdb membutuhkan folder, GDB, SHP, ZIP, atau RAR")
+        try:
+            results = extract_gdb_tree(inp, out, overwrite=a.overwrite, dry_run=a.dry_run,
+                                       categories=a.category, chunk_size=a.chunk_size)
+        except Exception as exc:
+            parser.error(f"ekstrak GDB gagal: {exc}")
         for name, count, path in results:
             print(f"{name}: {count} fitur -> {path}")
         if a.dry_run:
@@ -89,8 +92,10 @@ def main(argv=None) -> int:
         else:
             print(f"Selesai: {len(results)} layer diekstrak.")
         return 0
-    if not inp.is_dir():
-        parser.error(f"folder input tidak ditemukan: {inp}")
+    if not inp.exists():
+        parser.error(f"input tidak ditemukan: {inp}")
+    if not inp.is_dir() and inp.suffix.casefold() != ".zip":
+        parser.error(f"input harus berupa folder atau ZIP berisi Shapefile: {inp}")
     o = Options(input_dir=inp, output_dir=out, dry_run=a.dry_run, overwrite=a.overwrite,
                 target_crs=a.target_crs, include_single=a.include_single,
                 add_source_fields=a.add_source_fields,

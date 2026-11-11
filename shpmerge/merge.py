@@ -207,9 +207,20 @@ def copy_single(g: Group, o: Options, out_dir: Path) -> None:
     sf = g.files[0]
     tmp = _new_tmp(out_dir)
     try:
-        for p in sf.path.parent.iterdir():
-            if p.is_file() and p.stem.lower() == sf.stem.lower() and p.suffix.lower() in SHP_EXTS:
-                shutil.copy2(p, tmp / f"{g.out_name}{p.suffix.lower()}")
+        if isinstance(sf.path, str):
+            info = read_info(sf.path)
+            count = int(info["features"])
+            starts = range(0, count, o.chunk_size) if count else (0,)
+            for start in starts:
+                frame = read_dataframe(sf.path, skip_features=start,
+                                       max_features=o.chunk_size, **_read_kw(o))
+                write_dataframe(frame, str(tmp / f"{g.out_name}.shp"),
+                                driver="ESRI Shapefile", append=start > 0,
+                                encoding="UTF-8")
+        else:
+            for p in sf.path.parent.iterdir():
+                if p.is_file() and p.stem.lower() == sf.stem.lower() and p.suffix.lower() in SHP_EXTS:
+                    shutil.copy2(p, tmp / f"{g.out_name}{p.suffix.lower()}")
         finalize(tmp, out_dir, g.out_name, o.overwrite)
         final = out_dir / f"{g.out_name}.shp"
         if not final.exists() or int(read_info(str(final))["features"]) != sf.features:

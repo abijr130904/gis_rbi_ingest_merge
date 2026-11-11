@@ -45,9 +45,23 @@ python -m pytest tests -q
 
 Program ini menggabungkan file Shapefile berdasarkan nama kategori. Jalankan `python merge_shp.py --help` untuk melihat opsi yang tersedia.
 
-### Ekstrak layer GDB langsung dari ZIP
+### Merge Shapefile langsung dari ZIP
 
-Gunakan `--extract-gdb` untuk menyimpan setiap layer spasial sebagai file `.gdb` terpisah. GDB yang berada di dalam ZIP dibaca langsung oleh GDAL, tanpa mengekstrak isi ZIP ke disk.
+Jika folder sumber berisi ZIP dengan file `.shp`, jalankan merge biasa tanpa `--extract-gdb`. Program membaca Shapefile di dalam ZIP langsung dan tetap menulis hasil dalam format `.shp`.
+
+```powershell
+python .\merge_shp.py --input "E:\inageopotal 50k\Papua Pegunungan 50K" `
+  --output "E:\inageopotal 50k\hasil_merge\Papua Pegunungan 50K" --dry-run
+
+python .\merge_shp.py --input "E:\inageopotal 50k\Papua Pegunungan 50K" `
+  --output "E:\inageopotal 50k\hasil_merge\Papua Pegunungan 50K"
+```
+
+Gunakan `--extract-gdb` jika setiap sumber SHP harus menjadi GDB terpisah, atau bila sumber memang File Geodatabase.
+
+### Ekstrak layer GDB langsung dari ZIP/RAR
+
+Gunakan `--extract-gdb` untuk menyimpan setiap layer GDB atau setiap file SHP sebagai file `.gdb` terpisah. SHP/GDB yang berada di dalam ZIP/RAR dibaca langsung oleh GDAL, tanpa mengekstrak isi arsip ke disk. Pemindaian RAR membutuhkan 7-Zip, dan pembacaan langsungnya membutuhkan driver GDAL `/vsirar/` yang dibangun dengan libarchive.
 
 ```powershell
 # Pindai folder sumber beserta subfoldernya
@@ -61,9 +75,13 @@ python .\merge_shp.py --input "G:\INAGEOPORTAL_FULL\Maluku Utara 50k" `
 # Bisa juga berikan satu ZIP langsung
 python .\merge_shp.py --input "G:\INAGEOPORTAL_FULL\data.zip" `
   --output "G:\INAGEOPORTAL_FULL\ekstrak_gdb" --extract-gdb
+
+# ZIP berisi Shapefile: setiap .shp menjadi file .gdb
+python .\merge_shp.py --input "E:\inageopotal 50k\Papua Pegunungan 50K" `
+  --output "E:\inageopotal 50k\ekstrak_gdb\Papua Pegunungan 50K" --extract-gdb
 ```
 
-Hasil dari ZIP disimpan di subfolder bernama ZIP, mengikuti struktur folder GDB di dalam arsip. Penulisan output membutuhkan driver GDAL `OpenFileGDB` yang mendukung write.
+Hasil dari arsip disimpan di subfolder bernama arsip, mengikuti struktur folder sumber di dalamnya. Penulisan output membutuhkan driver GDAL `OpenFileGDB` yang mendukung write.
 
 ### Ekstrak arsip ZIP/RAR
 
@@ -93,4 +111,4 @@ Untuk bantuan opsi masing-masing perintah, jalankan:
 ```powershell
 python merge_shp.py --help
 python ekstrak_arsip.py --help
-```\n
+```

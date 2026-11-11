@@ -36,7 +36,7 @@ def family(dtype: str) -> str:
 
 
 def inspect_file(sf: SourceFile, encoding: str | None = None) -> None:
-    miss = missing_components(sf.path)
+    miss = missing_components(sf.path, sf.components)
     if miss:
         sf.error = "KOMPONEN_HILANG: " + ",".join(miss)
         return
@@ -48,8 +48,12 @@ def inspect_file(sf: SourceFile, encoding: str | None = None) -> None:
         sf.info = None
         sf.error = f"TIDAK_BISA_DIBACA: {exc}"
         return
-    sf.size_shp = sf.path.stat().st_size
-    sf.size_dbf = sibling_size(sf.path, ".dbf")
+    if sf.components is not None:
+        sf.size_shp = int(sf.components.get(".shp", sf.size_shp))
+        sf.size_dbf = sibling_size(sf.path, ".dbf", sf.components)
+    else:
+        sf.size_shp = Path(sf.path).stat().st_size
+        sf.size_dbf = sibling_size(sf.path, ".dbf")
 
 
 def _fingerprint(sf: SourceFile):

@@ -34,7 +34,7 @@ class Options:
 
 @dataclass
 class SourceFile:
-    path: Path
+    path: Path | str
     rel: str  # path relatif terhadap folder input (posix)
     stem: str
     region_hint: str  # HANYA petunjuk dari nama folder, bukan wilayah administrasi valid
@@ -43,6 +43,7 @@ class SourceFile:
     error: str | None = None
     size_shp: int = 0
     size_dbf: int = 0
+    components: dict[str, int] | None = None
 
     @property
     def features(self) -> int:
