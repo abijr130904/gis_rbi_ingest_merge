@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import logging
+import os
 import shutil
+import uuid
 from pathlib import Path
 
 import geopandas as gpd
@@ -109,12 +111,15 @@ def dissolve_group(g: Group, o: Options, out_dir: Path) -> None:
     name = g.out_name
     ddir = out_dir / DISSOLVE_DIR
     ddir.mkdir(parents=True, exist_ok=True)
-    if existing_outputs(ddir, name) and not o.overwrite:
+    is_gdb = Path(g.output).suffix.casefold() == ".gdb"
+    dissolved_gdb = ddir / f"{name}.gdb"
+    if ((dissolved_gdb.exists() if is_gdb else bool(existing_outputs(ddir, name)))
+            and not o.overwrite):
         g.warnings.append("DISSOLVE_DILEWATI: hasil dissolve sudah ada (gunakan --overwrite)")
         return
     tmp = _new_tmp(ddir)
     try:
-        gdf = read_dataframe(g.output)
+        gdf = read_dataframe(g.output, **({"layer": name} if is_gdb else {}))
         gname = gdf.geometry.name
         n_in = len(gdf)
         if "SRC_FILE" not in gdf.columns:
@@ -180,18 +185,43 @@ def dissolve_group(g: Group, o: Options, out_dir: Path) -> None:
         if "ATR_CAMPUR" not in res.columns:
             res["ATR_CAMPUR"] = 0
 
-        info = read_info(g.output)
+        info = read_info(g.output, **({"layer": name} if is_gdb else {}))
         fams = {str(n): family(dt) for n, dt in zip(info["fields"], info["dtypes"])}
         for c in key_cols:
             if fams.get(c) == "int":
                 res[c] = _cast(res[c], "int")
 
-        tmp_shp = tmp / f"{name}.shp"
-        write_dataframe(res, str(tmp_shp), driver="ESRI Shapefile", encoding="UTF-8")
-        if int(read_info(str(tmp_shp))["features"]) != len(res):
+        if is_gdb:
+            tmp_output = tmp / f"{name}.gdb"
+            write_dataframe(res, str(tmp_output), layer=name, driver="OpenFileGDB")
+            info = read_info(str(tmp_output), layer=name)
+        else:
+            tmp_output = tmp / f"{name}.shp"
+            write_dataframe(res, str(tmp_output), driver="ESRI Shapefile", encoding="UTF-8")
+            info = read_info(str(tmp_output))
+        if int(info["features"]) != len(res):
             raise ValueError("verifikasi hasil dissolve gagal")
-        finalize(tmp, ddir, name, o.overwrite)
-        g.dissolved_output = str(ddir / f"{name}.shp")
+        if is_gdb:
+            final = ddir / f"{name}.gdb"
+            backup = ddir / f".{name}.backup_{uuid.uuid4().hex[:8]}.gdb"
+            moved_old = False
+            try:
+                if final.exists():
+                    if not o.overwrite:
+                        raise FileExistsError(f"hasil dissolve sudah ada: {final}")
+                    os.replace(final, backup)
+                    moved_old = True
+                os.replace(tmp_output, final)
+            except Exception:
+                if moved_old and not final.exists():
+                    os.replace(backup, final)
+                raise
+            if moved_old:
+                shutil.rmtree(backup, ignore_errors=True)
+        else:
+            finalize(tmp, ddir, name, o.overwrite)
+            final = ddir / f"{name}.shp"
+        g.dissolved_output = str(final)
         g.dissolved_features = len(res)
         g.warnings.append(f"DISSOLVE: {n_in} fitur -> {len(res)} fitur "
                           "(per file sumber dan atribut identik, plus tumpang tindih)")

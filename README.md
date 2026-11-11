@@ -61,7 +61,7 @@ Gunakan `--extract-gdb` jika setiap sumber SHP harus menjadi GDB terpisah, atau 
 
 ### Merge beberapa GDB menjadi satu GDB per kategori
 
-`--merge-gdb` menggabungkan layer spasial bernama sama dari seluruh FileGDB di folder input. Hasilnya satu file `.gdb` per kategori/layer; struktur atribut, geometri, dan CRS sumber harus cocok. Filter dengan `--category` (bisa diulang), dan gunakan `--dry-run` untuk memeriksa jumlah fitur sebelum menulis.
+`--merge-gdb` memakai aturan penamaan dan validasi kategori yang sama seperti merge SHP: layer dengan nama sama digabung, sedangkan nama yang hanya mirip tetap terpisah. Hasilnya satu file `.gdb` per kategori/layer. Layer poligon juga menjalani dissolve secara bawaan; hasilnya disimpan sebagai `.gdb` di subfolder `dissolved` dan dapat dinonaktifkan dengan `--no-dissolve`. Opsi `--target-crs`, `--allow-unknown-crs`, `--strict-schema`, `--allow-schema-union`, `--skip-bad-files`, `--include-single`, dan `--no-add-source-fields` berlaku juga. Filter `--category` memakai nama layer (bisa diulang); akhiran `.gdb` boleh dicantumkan, misalnya `--category "AIRPORT_AR_50K.gdb"`. Gunakan `--dry-run` untuk memeriksa jumlah fitur sebelum menulis.
 
 ```powershell
 python .\merge_shp.py --input "E:\inageopotal 50k\ekstrak_gdb" `

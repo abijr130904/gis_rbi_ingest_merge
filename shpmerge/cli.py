@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import logging
+import sys
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -10,6 +12,24 @@ from .pipeline import run_pipeline
 from .report import write_reports
 from .extract import extract_gdb_tree
 from .merge_gdb import merge_gdb_tree
+
+
+def _with_running_indicator(label: str, operation):
+    """Cetak heartbeat selama operasi panjang agar CLI tidak tampak macet."""
+    stop = threading.Event()
+
+    def heartbeat():
+        while not stop.wait(15):
+            print(f"[{datetime.now():%H:%M:%S}] {label} masih berjalan...", file=sys.stderr, flush=True)
+
+    thread = threading.Thread(target=heartbeat, daemon=True)
+    print(f"{label} berjalan...", file=sys.stderr, flush=True)
+    thread.start()
+    try:
+        return operation()
+    finally:
+        stop.set()
+        thread.join()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -84,8 +104,11 @@ def main(argv=None) -> int:
         if not inp.is_dir() and inp.suffix.casefold() not in {".gdb", ".shp", ".zip", ".rar"}:
             parser.error("--extract-gdb membutuhkan folder, GDB, SHP, ZIP, atau RAR")
         try:
-            results = extract_gdb_tree(inp, out, overwrite=a.overwrite, dry_run=a.dry_run,
-                                       categories=a.category, chunk_size=a.chunk_size)
+            results = _with_running_indicator(
+                "Ekstraksi GDB",
+                lambda: extract_gdb_tree(inp, out, overwrite=a.overwrite, dry_run=a.dry_run,
+                                         categories=a.category, chunk_size=a.chunk_size),
+            )
         except Exception as exc:
             parser.error(f"ekstrak GDB gagal: {exc}")
         for name, count, path in results:
@@ -99,8 +122,21 @@ def main(argv=None) -> int:
         if not inp.exists():
             parser.error(f"input tidak ditemukan: {inp}")
         try:
-            results = merge_gdb_tree(inp, out, categories=a.category, dry_run=a.dry_run,
-                                     overwrite=a.overwrite, chunk_size=a.chunk_size)
+            results = _with_running_indicator(
+                "Merge GDB",
+                lambda: merge_gdb_tree(inp, out, categories=a.category, dry_run=a.dry_run,
+                                       overwrite=a.overwrite, chunk_size=a.chunk_size,
+                                       target_crs=a.target_crs, include_single=a.include_single,
+                                       add_source_fields=a.add_source_fields,
+                                       strict_schema=a.strict_schema,
+                                       allow_schema_union=a.allow_schema_union,
+                                       allow_unknown_crs=a.allow_unknown_crs,
+                                       skip_bad_files=a.skip_bad_files,
+                                       dissolve=a.dissolve,
+                                       dissolve_ignore=[c.strip() for c in a.dissolve_ignore.split(",") if c.strip()],
+                                       dissolve_overlap=a.dissolve_overlap,
+                                       dissolve_overlap_min=a.dissolve_overlap_min),
+            )
         except Exception as exc:
             parser.error(f"merge GDB gagal: {exc}")
         for name, count, path in results:
@@ -125,7 +161,7 @@ def main(argv=None) -> int:
                 dissolve_overlap=a.dissolve_overlap,
                 dissolve_overlap_min=a.dissolve_overlap_min)
 
-    result = run_pipeline(o)
+    result = _with_running_indicator("Pemrosesan Shapefile", lambda: run_pipeline(o))
     print_summary(result)
     report = o.report
     if report is None and not o.dry_run:

@@ -2,93 +2,184 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
+import uuid
 from collections import defaultdict
+from dataclasses import replace
 from pathlib import Path
 
 import pyogrio
 from pyogrio import list_layers, read_dataframe, read_info, write_dataframe
-
+from pyproj import CRS
 from .detect import normalize_name, safe_output_name
+from .dissolve import dissolve_group
+from .models import Group, Options, SourceFile
+from .validate import crs_equal, validate_group
 
 log = logging.getLogger("shpmerge")
 
 
-def merge_gdb_tree(input_path: Path, output_root: Path, *, categories: list[str] | None = None,
-                   dry_run: bool = False, overwrite: bool = False,
-                   chunk_size: int = 50_000) -> list[tuple[str, int, str]]:
-    """Merge same-named spatial layers from FileGDBs into one GDB per layer/category."""
+def _discover_gdbs(input_path: Path, output_root: Path) -> list[Path]:
     root = input_path.resolve()
     if root.suffix.casefold() == ".gdb":
-        gdbs = [root]
-    elif root.is_dir():
-        gdbs = []
-        output_resolved = output_root.resolve()
-        for current, dirs, _ in os.walk(root):
-            folder = Path(current)
-            found = [d for d in dirs if (folder / d).suffix.casefold() == ".gdb"]
-            gdbs.extend(folder / d for d in found
-                        if (folder / d).resolve() != output_resolved
-                        and output_resolved not in (folder / d).resolve().parents)
-            dirs[:] = sorted(d for d in dirs if d not in found
-                             and (folder / d).resolve() != output_resolved)
-    else:
+        return [root]
+    if not root.is_dir():
         raise ValueError("--merge-gdb membutuhkan folder atau satu direktori .gdb")
-    gdbs = sorted(set(gdbs), key=lambda p: str(p).casefold())
-    if not gdbs:
-        raise FileNotFoundError(f"tidak ditemukan direktori .gdb di {root}")
+    output = output_root.resolve()
+    found = []
+    for current, dirs, _ in os.walk(root):
+        folder = Path(current)
+        children = [d for d in dirs if (folder / d).suffix.casefold() == ".gdb"]
+        found.extend(folder / d for d in children
+                     if (folder / d).resolve() != output
+                     and output not in (folder / d).resolve().parents)
+        dirs[:] = sorted(d for d in dirs if d not in children
+                         and (folder / d).resolve() != output)
+    return sorted(set(found), key=lambda p: str(p).casefold())
 
-    wanted = {normalize_name(name) for name in (categories or [])}
-    groups: dict[str, list[tuple[Path, str, str]]] = defaultdict(list)
+
+def _write_group(g: Group, o: Options, temporary: Path) -> int:
+    try:
+        written = 0
+        for sf in g.files:
+            layer = sf.rel.rsplit("/", 1)[-1]
+            for start in range(0, sf.features, o.chunk_size):
+                frame = read_dataframe(str(sf.path), layer=layer, skip_features=start,
+                                        max_features=o.chunk_size)
+                if o.target_crs and sf.crs and not crs_equal(sf.crs, o.target_crs):
+                    frame = frame.to_crs(o.target_crs)
+                geom = frame.geometry.name
+                for name, fam in g.schema:
+                    if name not in frame.columns:
+                        frame[name] = None
+                    if fam == "int":
+                        frame[name] = frame[name].astype("Int64") if frame[name].isna().any() else frame[name].astype("int64")
+                    elif fam == "float":
+                        frame[name] = frame[name].astype("float64")
+                columns = [name for name, _ in g.schema]
+                if o.add_source_fields:
+                    frame["SRC_REGION"] = sf.region_hint[:254]
+                    frame["SRC_FILE"] = sf.rel[:254]
+                    columns += ["SRC_REGION", "SRC_FILE"]
+                frame = frame[columns + [geom]]
+                write_dataframe(frame, str(temporary), layer=g.out_name,
+                                driver="OpenFileGDB", append=written > 0,
+                                geometry_type=sf.geometry_type)
+                written += len(frame)
+                log.info("  %s: %d/%d fitur (total tertulis %d)", sf.rel,
+                         min(start + o.chunk_size, sf.features), sf.features, written)
+        return written
+    except Exception:
+        shutil.rmtree(temporary, ignore_errors=True)
+        raise
+
+
+def merge_gdb_tree(input_path: Path, output_root: Path, *, categories: list[str] | None = None,
+                   dry_run: bool = False, overwrite: bool = False,
+                   chunk_size: int = 50_000, target_crs: str | None = None,
+                   include_single: bool = False, add_source_fields: bool = True,
+                   strict_schema: bool = False, allow_schema_union: bool = False,
+                   allow_unknown_crs: bool = False, skip_bad_files: bool = False,
+                   dissolve: bool = True, dissolve_ignore: list[str] | None = None,
+                   dissolve_overlap: bool = True,
+                   dissolve_overlap_min: float = 0.01) -> list[tuple[str, int, str]]:
+    """Merge same-named GDB layers using the shared SHP category validation rules."""
+    gdbs = _discover_gdbs(input_path, output_root)
+    if not gdbs:
+        raise FileNotFoundError(f"tidak ditemukan direktori .gdb di {input_path}")
+    wanted = {normalize_name(Path(name).stem if Path(name).suffix.casefold() == ".gdb" else name)
+              for name in (categories or [])}
+    grouped: dict[str, list[SourceFile]] = defaultdict(list)
     for gdb in gdbs:
-        for layer, geometry in list_layers(str(gdb)):
-            if geometry is not None and (not wanted or normalize_name(str(layer)) in wanted):
-                groups[normalize_name(str(layer))].append((gdb, str(layer), str(geometry)))
-    if wanted:
-        found = set(groups)
-        missing = sorted(wanted - found)
-        if missing:
-            log.warning("Kategori tidak ditemukan: %s", ", ".join(missing))
-    if not groups:
+        try:
+            layers = list_layers(str(gdb))
+        except Exception as exc:
+            log.warning("GDB tidak dapat dibaca %s: %s", gdb, exc)
+            continue
+        for layer, geometry in layers:
+            if geometry is None:
+                continue
+            key = normalize_name(str(layer))
+            if wanted and key not in wanted:
+                continue
+            sf = SourceFile(path=gdb, rel=f"{gdb.name}/{layer}", stem=str(layer),
+                            region_hint=gdb.parent.name, key=key)
+            try:
+                sf.info = read_info(str(gdb), layer=str(layer))
+                if int(sf.info["features"]) < 0:
+                    raise ValueError("jumlah fitur tidak dapat dihitung")
+            except Exception as exc:
+                sf.error = f"TIDAK_BISA_DIBACA: {exc}"
+            grouped[key].append(sf)
+    missing = sorted(wanted - set(grouped))
+    if missing:
+        log.warning("Kategori tidak ditemukan: %s", ", ".join(missing))
+    if not grouped:
         raise FileNotFoundError("tidak ditemukan layer GDB yang cocok dengan kategori")
 
-    driver_mode = pyogrio.list_drivers().get("OpenFileGDB", "")
-    if not dry_run and "w" not in driver_mode.casefold():
-        raise RuntimeError(f"driver OpenFileGDB tidak mendukung tulis (status={driver_mode!r})")
-
-    output_root = output_root.resolve()
+    opts = Options(input_dir=input_path, output_dir=output_root, dry_run=dry_run,
+                   overwrite=overwrite, target_crs=target_crs,
+                   include_single=include_single, add_source_fields=add_source_fields,
+                   categories=categories or [], strict_schema=strict_schema,
+                   allow_schema_union=allow_schema_union, allow_unknown_crs=allow_unknown_crs,
+                   skip_bad_files=skip_bad_files, chunk_size=chunk_size,
+                   dissolve=dissolve, dissolve_ignore=dissolve_ignore or [],
+                   dissolve_overlap=dissolve_overlap,
+                   dissolve_overlap_min=dissolve_overlap_min)
+    if target_crs:
+        CRS.from_user_input(target_crs)
+    groups = [Group(key=k, files=sorted(v, key=lambda f: f.rel.casefold()),
+                    out_name=safe_output_name(k)) for k, v in sorted(grouped.items())]
     results = []
-    for key, sources in sorted(groups.items()):
-        name = safe_output_name(key)
-        dest = output_root / f"{name}.gdb"
-        metadata = [(gdb, layer, geom, read_info(str(gdb), layer=layer))
-                    for gdb, layer, geom in sources]
-        count = sum(int(info["features"]) for _, _, _, info in metadata)
-        # Require matching spatial definition and attributes; avoid silently corrupting schema.
-        baseline = metadata[0][3]
-        base_fields = list(zip(baseline["fields"], baseline["dtypes"]))
-        for gdb, layer, geom, info in metadata[1:]:
-            fields = list(zip(info["fields"], info["dtypes"]))
-            if geom.casefold() != metadata[0][2].casefold() or fields != base_fields:
-                raise ValueError(f"skema/geometri berbeda untuk kategori {key!r}: {gdb} / {layer}")
-            if (info.get("crs") or None) != (baseline.get("crs") or None):
-                raise ValueError(f"CRS berbeda untuk kategori {key!r}: {gdb} / {layer}")
-        results.append((key, count, str(dest)))
+    output_root = output_root.resolve()
+    if not dry_run:
+        output_root.mkdir(parents=True, exist_ok=True)
+        mode = pyogrio.list_drivers().get("OpenFileGDB", "")
+        if "w" not in mode.casefold():
+            raise RuntimeError(f"driver OpenFileGDB tidak mendukung tulis (status={mode!r})")
+    for g in groups:
+        validate_group(g, opts)
+        dest = output_root / f"{g.out_name}.gdb"
+        count = g.total_features
+        results.append((g.key, count, str(dest)))
+        if g.status == "REVIEW_REQUIRED":
+            log.warning("Kategori perlu ditinjau %s: %s", g.key, "; ".join(g.reasons))
+            continue
+        if g.status == "SKIPPED":
+            log.info("Kategori dilewati %s: %s", g.key, "; ".join(g.reasons))
+            continue
+        if g.status == "SINGLE_SOURCE" and not include_single:
+            log.info("Kategori %s hanya memiliki satu sumber; dilewati (gunakan --include-single)", g.key)
+            continue
+        group_options = opts
+        if g.status == "SINGLE_SOURCE":
+            # SHP copies a single source unchanged, without adding source fields.
+            g.schema = g.files[0].schema
+            group_options = replace(opts, add_source_fields=False)
         if dry_run:
             continue
-        if dest.exists():
-            if not overwrite:
-                raise FileExistsError(f"output sudah ada: {dest} (gunakan --overwrite)")
-            import shutil
-            shutil.rmtree(dest)
-        for gdb, layer, geom, info in metadata:
-            feature_count = int(info["features"])
-            starts = range(0, feature_count, chunk_size) if feature_count else (0,)
-            for start in starts:
-                frame = read_dataframe(str(gdb), layer=layer, skip_features=start,
-                                       max_features=chunk_size)
-                fid = info.get("fid_column")
-                if fid and fid in frame.columns:
-                    frame = frame.drop(columns=[fid])
-                write_dataframe(frame, str(dest), layer=name, driver="OpenFileGDB",
-                                append=dest.exists(), geometry_type=geom)
+        if dest.exists() and not overwrite:
+            log.warning("Output sudah ada, kategori dilewati %s: %s (gunakan --overwrite)", g.key, dest)
+            continue
+        temporary = dest.with_name(f".{dest.stem}.tmp_{uuid.uuid4().hex[:8]}.gdb")
+        written = _write_group(g, group_options, temporary)
+        if written != count:
+            shutil.rmtree(temporary, ignore_errors=True)
+            raise RuntimeError(f"fitur tertulis {written} != {count} untuk kategori {g.key}")
+        backup = dest.with_name(f".{dest.stem}.backup_{uuid.uuid4().hex[:8]}.gdb")
+        moved_old = False
+        try:
+            if dest.exists():
+                os.replace(dest, backup)
+                moved_old = True
+            os.replace(temporary, dest)
+        except Exception:
+            if moved_old and not dest.exists():
+                os.replace(backup, dest)
+            shutil.rmtree(temporary, ignore_errors=True)
+            raise
+        if moved_old:
+            shutil.rmtree(backup, ignore_errors=True)
+        g.status, g.output, g.output_features = "MERGED", str(dest), written
+        dissolve_group(g, opts, output_root)
     return results
