@@ -59,6 +59,19 @@ python .\merge_shp.py --input "E:\inageopotal 50k\Papua Pegunungan 50K" `
 
 Gunakan `--extract-gdb` jika setiap sumber SHP harus menjadi GDB terpisah, atau bila sumber memang File Geodatabase.
 
+### Merge beberapa GDB menjadi satu GDB per kategori
+
+`--merge-gdb` menggabungkan layer spasial bernama sama dari seluruh FileGDB di folder input. Hasilnya satu file `.gdb` per kategori/layer; struktur atribut, geometri, dan CRS sumber harus cocok. Filter dengan `--category` (bisa diulang), dan gunakan `--dry-run` untuk memeriksa jumlah fitur sebelum menulis.
+
+```powershell
+python .\merge_shp.py --input "E:\inageopotal 50k\ekstrak_gdb" `
+  --output "E:\inageopotal 50k\merge_gdb" --merge-gdb --dry-run
+
+python .\merge_shp.py --input "E:\inageopotal 50k\ekstrak_gdb" `
+  --output "E:\inageopotal 50k\merge_gdb" --merge-gdb `
+  --category "ADMINISTRASI_LN_50K" --category "JALAN_LN_50K"
+```
+
 ### Ekstrak layer GDB langsung dari ZIP/RAR
 
 Gunakan `--extract-gdb` untuk menyimpan setiap layer GDB atau setiap file SHP sebagai file `.gdb` terpisah. SHP/GDB yang berada di dalam ZIP/RAR dibaca langsung oleh GDAL, tanpa mengekstrak isi arsip ke disk. Pemindaian RAR membutuhkan 7-Zip, dan pembacaan langsungnya membutuhkan driver GDAL `/vsirar/` yang dibangun dengan libarchive.
@@ -81,7 +94,7 @@ python .\merge_shp.py --input "E:\inageopotal 50k\Papua Pegunungan 50K" `
   --output "E:\inageopotal 50k\ekstrak_gdb\Papua Pegunungan 50K" --extract-gdb
 ```
 
-Hasil dari arsip disimpan di subfolder bernama arsip, mengikuti struktur folder sumber di dalamnya. Penulisan output membutuhkan driver GDAL `OpenFileGDB` yang mendukung write.
+Hasil dari arsip disimpan di subfolder bernama arsip, mengikuti struktur folder sumber di dalamnya. Format arsip dikenali dari signature isi berkas, sehingga RAR yang keliru diberi ekstensi `.zip` tetap dapat dikenali. Shapefile di ZIP dibaca langsung. GDB di ZIP dan isi RAR dibuka otomatis ke direktori sementara lalu dibersihkan setelah proses selesai; pengguna tidak perlu mengekstrak arsip secara manual. Penulisan output membutuhkan driver GDAL `OpenFileGDB` yang mendukung write.
 
 ### Ekstrak arsip ZIP/RAR
 

@@ -9,6 +9,7 @@ from .models import Options
 from .pipeline import run_pipeline
 from .report import write_reports
 from .extract import extract_gdb_tree
+from .merge_gdb import merge_gdb_tree
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -17,6 +18,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--output", required=True, help="folder hasil")
     p.add_argument("--extract-gdb", action="store_true",
                    help="tulis layer GDB atau sumber SHP langsung/di dalam ZIP/RAR sebagai file GDB")
+    p.add_argument("--merge-gdb", action="store_true",
+                   help="gabungkan layer bernama sama dari beberapa FileGDB menjadi satu GDB per kategori")
     p.add_argument("--dry-run", action="store_true", help="hanya deteksi & tampilkan rencana")
     p.add_argument("--overwrite", action="store_true", help="izinkan mengganti output yang sesuai")
     p.add_argument("--target-crs", help="CRS target (mis. EPSG:4326); tanpa ini tidak ada transformasi")
@@ -91,6 +94,19 @@ def main(argv=None) -> int:
             print("DRY-RUN: tidak ada file yang ditulis.")
         else:
             print(f"Selesai: {len(results)} layer diekstrak.")
+        return 0
+    if a.merge_gdb:
+        if not inp.exists():
+            parser.error(f"input tidak ditemukan: {inp}")
+        try:
+            results = merge_gdb_tree(inp, out, categories=a.category, dry_run=a.dry_run,
+                                     overwrite=a.overwrite, chunk_size=a.chunk_size)
+        except Exception as exc:
+            parser.error(f"merge GDB gagal: {exc}")
+        for name, count, path in results:
+            print(f"{name}: {count} fitur -> {path}")
+        print("DRY-RUN: tidak ada file yang ditulis." if a.dry_run
+              else f"Selesai: {len(results)} GDB kategori digabung.")
         return 0
     if not inp.exists():
         parser.error(f"input tidak ditemukan: {inp}")

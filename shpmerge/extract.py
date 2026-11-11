@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import zipfile
 from pathlib import Path
 
@@ -14,6 +15,21 @@ from pyogrio import list_layers, read_dataframe, read_info, write_dataframe
 from .detect import normalize_name, safe_output_name
 
 log = logging.getLogger("shpmerge")
+
+
+def _archive_kind(archive: Path) -> str:
+    """Detect archive format from its signature, since source files are often misnamed."""
+    try:
+        with archive.open("rb") as stream:
+            signature = stream.read(8)
+    except OSError as exc:
+        raise ValueError(f"tidak dapat membaca arsip: {exc}") from exc
+    if (signature.startswith(b"PK\x03\x04") or signature.startswith(b"PK\x05\x06")
+            or signature.startswith(b"PK\x07\x08")):
+        return "zip"
+    if signature.startswith(b"Rar!\x1a\x07"):
+        return "rar"
+    return "unknown"
 
 
 def _rar_members(archive: Path) -> list[str]:
@@ -37,8 +53,8 @@ def _rar_members(archive: Path) -> list[str]:
 
 def _archive_gdbs(archive: Path) -> list[tuple[str, str]]:
     """Return GDAL VSI datasource and internal path for GDBs in ZIP or RAR."""
-    ext = archive.suffix.casefold()
-    if ext == ".zip":
+    kind = _archive_kind(archive)
+    if kind == "zip":
         try:
             with zipfile.ZipFile(archive) as zipped:
                 members = [name.replace("\\", "/").strip("/")
@@ -47,12 +63,12 @@ def _archive_gdbs(archive: Path) -> list[tuple[str, str]]:
             raise ValueError(f"file berakhiran .zip bukan ZIP valid atau rusak: {exc}") from exc
         archive_path = archive.resolve().as_posix()
         prefix = f"/vsizip/{archive_path}/"
-    elif ext == ".rar":
+    elif kind == "rar":
         members = _rar_members(archive)
         archive_path = archive.resolve().as_posix()
         prefix = f"/vsirar/{{{archive_path}}}/"
     else:
-        return []
+        raise ValueError("signature file bukan ZIP/RAR yang didukung")
     gdbs = set()
     for member in members:
         parts = member.split("/")
@@ -65,8 +81,8 @@ def _archive_gdbs(archive: Path) -> list[tuple[str, str]]:
 
 def _archive_shapefiles(archive: Path) -> list[tuple[str, str]]:
     """Return VSI datasource and internal path for Shapefiles in a ZIP or RAR."""
-    ext = archive.suffix.casefold()
-    if ext == ".zip":
+    kind = _archive_kind(archive)
+    if kind == "zip":
         try:
             with zipfile.ZipFile(archive) as zipped:
                 members = [name.replace("\\", "/").strip("/")
@@ -74,24 +90,77 @@ def _archive_shapefiles(archive: Path) -> list[tuple[str, str]]:
         except (zipfile.BadZipFile, OSError) as exc:
             raise ValueError(f"file berakhiran .zip bukan ZIP valid atau rusak: {exc}") from exc
         prefix = f"/vsizip/{archive.resolve().as_posix()}/"
-    elif ext == ".rar":
+    elif kind == "rar":
         members = _rar_members(archive)
         prefix = f"/vsirar/{{{archive.resolve().as_posix()}}}/"
     else:
-        return []
+        raise ValueError("signature file bukan ZIP/RAR yang didukung")
     return [(f"{prefix}{member}", member) for member in members
             if member.casefold().endswith(".shp")]
 
 
-def _archive_sources(archive: Path, base_dir: Path) -> list[tuple[Path | str, Path]]:
-    sources = [(vsi, base_dir / Path(member).parent)
-               for vsi, member in _archive_gdbs(archive)]
-    sources.extend((vsi, base_dir / Path(member).parent)
-                   for vsi, member in _archive_shapefiles(archive))
-    return sources
+def _archive_sources(archive: Path, base_dir: Path,
+                     staging_root: Path | None = None) -> list[tuple[Path | str, Path]]:
+    kind = _archive_kind(archive)
+    if kind == "zip":
+        try:
+            with zipfile.ZipFile(archive) as zipped:
+                members = zipped.namelist()
+                has_gdb = any(".gdb/" in name.replace("\\", "/").casefold()
+                              for name in members)
+                if not has_gdb:
+                    sources = [(vsi, base_dir / Path(member).parent)
+                               for vsi, member in _archive_shapefiles(archive)]
+                    return sources
+                if staging_root is None:
+                    raise RuntimeError("direktori sementara diperlukan untuk membaca GDB di ZIP")
+                stage = staging_root / f"{archive.stem}_{abs(hash(str(archive.resolve()))):x}"
+                stage.mkdir(parents=True, exist_ok=True)
+                zipped.extractall(stage)
+        except (zipfile.BadZipFile, OSError) as exc:
+            raise ValueError(f"ZIP rusak atau tidak dapat diekstrak: {exc}") from exc
+    elif kind == "rar":
+        if staging_root is None:
+            raise RuntimeError("direktori sementara diperlukan untuk membaca RAR")
+        stage = staging_root / f"{archive.stem}_{abs(hash(str(archive.resolve()))):x}"
+        stage.mkdir(parents=True, exist_ok=True)
+        exe = shutil.which("7z") or shutil.which("7za")
+        for candidate in (r"C:\Program Files\7-Zip\7z.exe",
+                          r"C:\Program Files (x86)\7-Zip\7z.exe"):
+            if not exe and Path(candidate).is_file():
+                exe = candidate
+        if not exe:
+            raise RuntimeError("7-Zip diperlukan untuk membaca RAR pada environment ini")
+        proc = subprocess.run([exe, "x", "-y", f"-o{stage}", str(archive)],
+                              capture_output=True, text=True, errors="replace")
+        if proc.returncode != 0:
+            raise RuntimeError(proc.stderr.strip() or proc.stdout.strip() or "7-Zip gagal mengekstrak RAR")
+    else:
+        raise ValueError("signature file bukan ZIP/RAR yang didukung")
+
+    if kind in {"zip", "rar"}:
+        found: list[tuple[Path | str, Path]] = []
+        for current, dirs, files in os.walk(stage):
+            folder = Path(current)
+            kept = []
+            for name in dirs:
+                child = folder / name
+                if child.suffix.casefold() == ".gdb":
+                    rel = child.relative_to(stage).parent
+                    found.append((child, base_dir / rel))
+                else:
+                    kept.append(name)
+            dirs[:] = kept
+            for name in files:
+                shp = folder / name
+                if shp.suffix.casefold() == ".shp":
+                    found.append((shp, base_dir / shp.parent.relative_to(stage)))
+        return found
+    return []
 
 
-def _find_sources(root: Path, output_root: Path) -> list[tuple[Path | str, Path]]:
+def _find_sources(root: Path, output_root: Path,
+                  staging_root: Path | None = None) -> list[tuple[Path | str, Path]]:
     """Find ordinary GDB folders and GDBs inside ZIP files, without unpacking ZIPs."""
     root = root.resolve()
     if root.suffix.casefold() == ".gdb":
@@ -99,7 +168,7 @@ def _find_sources(root: Path, output_root: Path) -> list[tuple[Path | str, Path]
     if root.suffix.casefold() == ".shp":
         return [(root, Path())]
     if root.suffix.casefold() in {".zip", ".rar"}:
-        return _archive_sources(root, Path(root.stem))
+        return _archive_sources(root, Path(root.stem), staging_root)
 
     output_root = output_root.resolve()
     sources: list[tuple[Path | str, Path]] = []
@@ -127,7 +196,7 @@ def _find_sources(root: Path, output_root: Path) -> list[tuple[Path | str, Path]
                 continue
             try:
                 base_dir = source_file.parent.relative_to(root) / source_file.stem
-                sources.extend(_archive_sources(source_file, base_dir))
+                sources.extend(_archive_sources(source_file, base_dir, staging_root))
             except Exception as exc:
                 skipped_archives.append(f"{source_file}: {exc}")
                 log.warning("Lewati arsip %s: %s", source_file, exc)
@@ -149,7 +218,7 @@ def _extract_one(source: Path | str, output_dir: Path, *, overwrite: bool,
                   if normalize_name(name) in wanted]
 
     planned_names: dict[str, str] = {}
-    for layer, _ in layers:
+    for layer, geom_type in layers:
         filename = safe_output_name(layer)
         folded = filename.casefold()
         if folded in planned_names:
@@ -157,7 +226,7 @@ def _extract_one(source: Path | str, output_dir: Path, *, overwrite: bool,
         planned_names[folded] = layer
 
     results = []
-    for layer, _ in layers:
+    for layer, geom_type in layers:
         filename = safe_output_name(layer)
         dest = output_dir / f"{filename}.gdb"
         info = read_info(source_ref, layer=layer)
@@ -194,18 +263,31 @@ def _extract_one(source: Path | str, output_dir: Path, *, overwrite: bool,
             fid_column = info.get("fid_column")
             if fid_column and fid_column in frame.columns:
                 frame = frame.drop(columns=[fid_column])
-            write_dataframe(frame, str(dest), layer=filename, driver="OpenFileGDB",
-                            append=start > 0,
-                            geometry_type=info.get("geometry_type") if feature_count == 0 else None)
+            try:
+                write_dataframe(frame, str(dest), layer=filename, driver="OpenFileGDB",
+                                append=start > 0, geometry_type=geom_type)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"gagal menulis layer {layer!r} (geometri {geom_type!r}, chunk mulai {start}): {exc}"
+                ) from exc
     return results
 
 
 def extract_gdb_tree(input_path: Path, output_root: Path, *, overwrite: bool = False,
                      dry_run: bool = False, categories: list[str] | None = None,
                      chunk_size: int = 50_000) -> list[tuple[str, int, str]]:
-    sources = _find_sources(input_path, output_root)
+    with tempfile.TemporaryDirectory(prefix="shpmerge_archives_") as temporary:
+        sources = _find_sources(input_path, output_root, Path(temporary))
+        return _extract_sources(sources, output_root, overwrite=overwrite,
+                                dry_run=dry_run, categories=categories,
+                                chunk_size=chunk_size)
+
+
+def _extract_sources(sources: list[tuple[Path | str, Path]], output_root: Path, *,
+                     overwrite: bool, dry_run: bool, categories: list[str] | None,
+                     chunk_size: int) -> list[tuple[str, int, str]]:
     if not sources:
-        raise FileNotFoundError(f"tidak ditemukan GDB, SHP, atau data spasial dalam arsip: {input_path}")
+        raise FileNotFoundError("tidak ditemukan GDB, SHP, atau data spasial dalam arsip")
 
     driver_mode = pyogrio.list_drivers().get("OpenFileGDB", "")
     if not dry_run and "w" not in driver_mode.casefold():
