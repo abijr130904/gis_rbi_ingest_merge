@@ -41,6 +41,8 @@ def _discover_gdbs(input_path: Path, output_root: Path) -> list[Path]:
 def _write_group(g: Group, o: Options, temporary: Path) -> int:
     try:
         written = 0
+        geometry_types = {sf.geometry_type for sf in g.files}
+        output_geometry_type = "Unknown" if len(geometry_types) > 1 else next(iter(geometry_types))
         for sf in g.files:
             layer = sf.rel.rsplit("/", 1)[-1]
             for start in range(0, sf.features, o.chunk_size):
@@ -66,7 +68,7 @@ def _write_group(g: Group, o: Options, temporary: Path) -> int:
                 frame = frame[columns + [geom]]
                 write_dataframe(frame, str(temporary), layer=g.out_name,
                                 driver="OpenFileGDB", append=written > 0,
-                                geometry_type=sf.geometry_type)
+                                geometry_type=output_geometry_type)
                 written += len(frame)
                 log.info("  %s: %d/%d fitur (total tertulis %d)", sf.rel,
                          min(start + o.chunk_size, sf.features), sf.features, written)
@@ -143,7 +145,6 @@ def merge_gdb_tree(input_path: Path, output_root: Path, *, categories: list[str]
         validate_group(g, opts)
         dest = output_root / f"{g.out_name}.gdb"
         count = g.total_features
-        results.append((g.key, count, str(dest)))
         if g.status == "REVIEW_REQUIRED":
             log.warning("Kategori perlu ditinjau %s: %s", g.key, "; ".join(g.reasons))
             continue
@@ -153,13 +154,14 @@ def merge_gdb_tree(input_path: Path, output_root: Path, *, categories: list[str]
         if g.status == "SINGLE_SOURCE" and not include_single:
             log.info("Kategori %s hanya memiliki satu sumber; dilewati (gunakan --include-single)", g.key)
             continue
+        if dry_run:
+            results.append((g.key, count, str(dest)))
+            continue
         group_options = opts
         if g.status == "SINGLE_SOURCE":
             # SHP copies a single source unchanged, without adding source fields.
             g.schema = g.files[0].schema
             group_options = replace(opts, add_source_fields=False)
-        if dry_run:
-            continue
         if dest.exists() and not overwrite:
             log.warning("Output sudah ada, kategori dilewati %s: %s (gunakan --overwrite)", g.key, dest)
             continue
@@ -175,13 +177,33 @@ def merge_gdb_tree(input_path: Path, output_root: Path, *, categories: list[str]
                 os.replace(dest, backup)
                 moved_old = True
             os.replace(temporary, dest)
-        except Exception:
+        except Exception as exc:
+            rollback_error = None
             if moved_old and not dest.exists():
-                os.replace(backup, dest)
+                try:
+                    os.replace(backup, dest)
+                except Exception as restore_exc:  # preserve the original failure context
+                    rollback_error = restore_exc
             shutil.rmtree(temporary, ignore_errors=True)
+            if isinstance(exc, PermissionError):
+                detail = (
+                    f"Windows menolak mengganti {dest}. FileGDB kemungkinan sedang "
+                    "terbuka/dikunci ArcGIS, QGIS, atau proses lain. Tutup semua "
+                    "aplikasi yang memakai GDB lalu jalankan ulang dengan --overwrite. "
+                    "Output lama dipertahankan."
+                )
+                if rollback_error:
+                    detail += f" Pemulihan backup juga gagal: {rollback_error}; backup: {backup}"
+                raise PermissionError(detail) from exc
+            if rollback_error:
+                raise RuntimeError(
+                    f"Gagal memasang output ({exc}); pemulihan GDB lama juga gagal: "
+                    f"{rollback_error}. Backup: {backup}"
+                ) from exc
             raise
         if moved_old:
             shutil.rmtree(backup, ignore_errors=True)
         g.status, g.output, g.output_features = "MERGED", str(dest), written
+        results.append((g.key, written, str(dest)))
         dissolve_group(g, opts, output_root)
     return results

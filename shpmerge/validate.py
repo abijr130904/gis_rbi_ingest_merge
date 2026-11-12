@@ -121,7 +121,13 @@ def validate_group(g: Group, o: Options) -> Group:
     # --- Geometri ---
     gtypes = sorted({f.geometry_type for f in g.files})
     if len(gtypes) > 1:
-        problems.append(f"GEOMETRI_BERBEDA: {gtypes}")
+        # FileGDB can store mixed point variants when the layer is created as
+        # Unknown. Keep Z values as supplied; the writer handles this case.
+        point_variants = {t.removesuffix(" Z") for t in gtypes}
+        if point_variants <= {"Point", "MultiPoint"}:
+            g.warnings.append(f"GEOMETRI_TITIK_CAMPURAN: {gtypes} (ditulis sebagai Unknown)")
+        else:
+            problems.append(f"GEOMETRI_BERBEDA: {gtypes}")
 
     # --- Skema ---
     union: dict[str, str] = {}
