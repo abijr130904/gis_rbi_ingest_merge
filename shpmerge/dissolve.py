@@ -109,10 +109,14 @@ def dissolve_group(g: Group, o: Options, out_dir: Path) -> None:
     if not (o.dissolve and g.output and is_polygon_group(g)):
         return
     name = g.out_name
-    ddir = out_dir / DISSOLVE_DIR
-    ddir.mkdir(parents=True, exist_ok=True)
     is_gdb = Path(g.output).suffix.casefold() == ".gdb"
-    dissolved_gdb = ddir / f"{name}.gdb"
+    # GDB merge output already occupies <name>.gdb in out_dir, so place the
+    # dissolved GDB beside it under a distinct name. Shapefile behavior stays
+    # in the existing dissolved subfolder.
+    ddir = out_dir if is_gdb else out_dir / DISSOLVE_DIR
+    ddir.mkdir(parents=True, exist_ok=True)
+    dissolved_name = f"{name}_dissolved" if is_gdb else name
+    dissolved_gdb = ddir / f"{dissolved_name}.gdb"
     if ((dissolved_gdb.exists() if is_gdb else bool(existing_outputs(ddir, name)))
             and not o.overwrite):
         g.warnings.append("DISSOLVE_DILEWATI: hasil dissolve sudah ada (gunakan --overwrite)")
@@ -192,7 +196,7 @@ def dissolve_group(g: Group, o: Options, out_dir: Path) -> None:
                 res[c] = _cast(res[c], "int")
 
         if is_gdb:
-            tmp_output = tmp / f"{name}.gdb"
+            tmp_output = tmp / f"{dissolved_name}.gdb"
             write_dataframe(res, str(tmp_output), layer=name, driver="OpenFileGDB")
             info = read_info(str(tmp_output), layer=name)
         else:
@@ -202,8 +206,8 @@ def dissolve_group(g: Group, o: Options, out_dir: Path) -> None:
         if int(info["features"]) != len(res):
             raise ValueError("verifikasi hasil dissolve gagal")
         if is_gdb:
-            final = ddir / f"{name}.gdb"
-            backup = ddir / f".{name}.backup_{uuid.uuid4().hex[:8]}.gdb"
+            final = dissolved_gdb
+            backup = ddir / f".{dissolved_name}.backup_{uuid.uuid4().hex[:8]}.gdb"
             moved_old = False
             try:
                 if final.exists():
