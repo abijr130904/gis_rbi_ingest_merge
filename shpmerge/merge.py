@@ -12,6 +12,7 @@ from pyogrio import read_dataframe, read_info, write_dataframe
 
 from .discovery import TMP_PREFIX
 from .models import SOURCE_FIELDS, Group, Options, SourceFile
+from .progress import ProgressBar
 from .validate import crs_equal
 
 log = logging.getLogger("shpmerge")
@@ -63,18 +64,20 @@ def _read_kw(o: Options) -> dict:
 
 def write_merged(g: Group, o: Options, dest: Path) -> int:
     first, written, invalid = True, 0, 0
-    for sf in g.files:
-        n = sf.features
-        for start in range(0, n, o.chunk_size):
-            gdf = read_dataframe(str(sf.path), skip_features=start,
-                                 max_features=o.chunk_size, **_read_kw(o))
-            gdf = _prepare(gdf, sf, g, o)
-            invalid += int((gdf.geometry.notna() & ~gdf.geometry.is_valid).sum())
-            write_dataframe(gdf, str(dest), driver="ESRI Shapefile",
-                            append=not first, encoding="UTF-8")
-            first = False
-            written += len(gdf)
-            log.info("  %s: %d/%d fitur (total tertulis %d)", sf.rel, min(start + o.chunk_size, n), n, written)
+    with ProgressBar(g.total_features, f"Merge {g.key}") as progress:
+        for sf in g.files:
+            n = sf.features
+            for start in range(0, n, o.chunk_size):
+                gdf = read_dataframe(str(sf.path), skip_features=start,
+                                     max_features=o.chunk_size, **_read_kw(o))
+                gdf = _prepare(gdf, sf, g, o)
+                invalid += int((gdf.geometry.notna() & ~gdf.geometry.is_valid).sum())
+                write_dataframe(gdf, str(dest), driver="ESRI Shapefile",
+                                append=not first, encoding="UTF-8")
+                first = False
+                written += len(gdf)
+                progress.update(len(gdf))
+                log.info("  %s: %d/%d fitur (total tertulis %d)", sf.rel, min(start + o.chunk_size, n), n, written)
     if invalid:
         g.warnings.append(f"{invalid} geometri invalid ditemukan (TIDAK diperbaiki/dihapus)")
     return written
@@ -213,16 +216,22 @@ def copy_single(g: Group, o: Options, out_dir: Path) -> None:
             info = read_info(sf.path)
             count = int(info["features"])
             starts = range(0, count, o.chunk_size) if count else (0,)
-            for start in starts:
-                frame = read_dataframe(sf.path, skip_features=start,
-                                       max_features=o.chunk_size, **_read_kw(o))
-                write_dataframe(frame, str(tmp / f"{g.out_name}.shp"),
-                                driver="ESRI Shapefile", append=start > 0,
-                                encoding="UTF-8")
+            with ProgressBar(count, f"Salin {g.key}") as progress:
+                for start in starts:
+                    frame = read_dataframe(sf.path, skip_features=start,
+                                           max_features=o.chunk_size, **_read_kw(o))
+                    write_dataframe(frame, str(tmp / f"{g.out_name}.shp"),
+                                    driver="ESRI Shapefile", append=start > 0,
+                                    encoding="UTF-8")
+                    progress.update(len(frame))
         else:
-            for p in sf.path.parent.iterdir():
-                if p.is_file() and p.stem.lower() == sf.stem.lower() and p.suffix.lower() in SHP_EXTS:
+            parts = [p for p in sf.path.parent.iterdir()
+                     if p.is_file() and p.stem.lower() == sf.stem.lower()
+                     and p.suffix.lower() in SHP_EXTS]
+            with ProgressBar(len(parts), f"Salin {g.key}", unit="file") as progress:
+                for p in parts:
                     shutil.copy2(p, tmp / f"{g.out_name}{p.suffix.lower()}")
+                    progress.update()
         finalize(tmp, out_dir, g.out_name, o.overwrite)
         final = out_dir / f"{g.out_name}.shp"
         if not final.exists() or int(read_info(str(final))["features"]) != sf.features:

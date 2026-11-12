@@ -13,6 +13,7 @@ import pyogrio
 from pyogrio import list_layers, read_dataframe, read_info, write_dataframe
 
 from .detect import normalize_name, safe_output_name
+from .progress import ProgressBar
 
 log = logging.getLogger("shpmerge")
 
@@ -253,23 +254,25 @@ def _extract_one(source: Path | str, output_dir: Path, *, overwrite: bool,
             shutil.rmtree(dest)
 
         starts = range(0, feature_count, chunk_size) if feature_count else (0,)
-        for start in starts:
-            frame = read_dataframe(source_ref, layer=layer, skip_features=start,
-                                   max_features=chunk_size)
-            # Source FileGDBs can store their FID as a physical field. Reusing
-            # that field on write makes OpenFileGDB interpret its value as the
-            # destination FID, which only supports positive 32-bit integers.
-            # Let the destination assign fresh FIDs instead.
-            fid_column = info.get("fid_column")
-            if fid_column and fid_column in frame.columns:
-                frame = frame.drop(columns=[fid_column])
-            try:
-                write_dataframe(frame, str(dest), layer=filename, driver="OpenFileGDB",
-                                append=start > 0, geometry_type=geom_type)
-            except Exception as exc:
-                raise RuntimeError(
-                    f"gagal menulis layer {layer!r} (geometri {geom_type!r}, chunk mulai {start}): {exc}"
-                ) from exc
+        with ProgressBar(feature_count, f"Ekstrak {layer}") as progress:
+            for start in starts:
+                frame = read_dataframe(source_ref, layer=layer, skip_features=start,
+                                       max_features=chunk_size)
+                # Source FileGDBs can store their FID as a physical field. Reusing
+                # that field on write makes OpenFileGDB interpret its value as the
+                # destination FID, which only supports positive 32-bit integers.
+                # Let the destination assign fresh FIDs instead.
+                fid_column = info.get("fid_column")
+                if fid_column and fid_column in frame.columns:
+                    frame = frame.drop(columns=[fid_column])
+                try:
+                    write_dataframe(frame, str(dest), layer=filename, driver="OpenFileGDB",
+                                    append=start > 0, geometry_type=geom_type)
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"gagal menulis layer {layer!r} (geometri {geom_type!r}, chunk mulai {start}): {exc}"
+                    ) from exc
+                progress.update(len(frame))
     return results
 
 

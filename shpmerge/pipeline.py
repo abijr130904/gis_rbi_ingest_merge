@@ -11,6 +11,7 @@ from .detect import group_files, normalize_name, safe_output_name, suggest_simil
 from .discovery import find_shapefiles
 from .merge import copy_single, existing_outputs, merge_group
 from .models import Group, Options
+from .progress import ProgressBar
 from .validate import inspect_file, validate_group
 
 from .dissolve import dissolve_group, is_polygon_group
@@ -45,11 +46,14 @@ def run_pipeline(o: Options) -> dict:
                 g.reasons.append("BENTROK_NAMA_OUTPUT: " + ", ".join(x.key for x in lst))
 
     active = [g for g in groups if g.status == "READY_TO_MERGE"]
-    for i, g in enumerate(active, 1):
-        log.info("[%d/%d] inspeksi kategori %s (%d file)", i, len(active), g.key, len(g.files))
-        for f in g.files:
-            inspect_file(f, o.source_encoding)
-        validate_group(g, o)
+    file_total = sum(len(g.files) for g in active)
+    with ProgressBar(file_total, "Inspeksi SHP", unit="file") as progress:
+        for i, g in enumerate(active, 1):
+            log.info("[%d/%d] inspeksi kategori %s (%d file)", i, len(active), g.key, len(g.files))
+            for f in g.files:
+                inspect_file(f, o.source_encoding)
+                progress.update()
+            validate_group(g, o)
 
     out_dir = o.output_dir.resolve()
     if not o.dry_run:

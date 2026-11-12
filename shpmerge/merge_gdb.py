@@ -15,6 +15,7 @@ import shapely
 from .detect import normalize_name, safe_output_name
 from .dissolve import dissolve_group
 from .models import Group, Options, SourceFile
+from .progress import ProgressBar
 from .validate import crs_equal, normalized_geometry_type, validate_group
 
 log = logging.getLogger("shpmerge")
@@ -48,54 +49,56 @@ def _write_group(g: Group, o: Options, temporary: Path) -> tuple[int, int]:
         if output_geometry_type is None:
             raise ValueError(f"tipe geometri tidak dapat diseragamkan: {sorted(geometry_types)}")
         base_output_type = output_geometry_type.removesuffix(" Z")
-        for sf in g.files:
-            layer = sf.rel.rsplit("/", 1)[-1]
-            for start in range(0, sf.features, o.chunk_size):
-                frame = read_dataframe(str(sf.path), layer=layer, skip_features=start,
-                                        max_features=o.chunk_size)
-                if o.target_crs and sf.crs and not crs_equal(sf.crs, o.target_crs):
-                    frame = frame.to_crs(o.target_crs)
-                geom = frame.geometry.name
-                source_read += len(frame)
-                # Split multipart features into single-part features. GeoPandas
-                # duplicates the attributes for every component, preserving
-                # every point/line/polygon while standardizing the layer type.
-                frame = frame.explode(index_parts=False, ignore_index=True)
-                unexpected = sorted({value.geom_type for value in frame.geometry
-                                     if value is not None and not value.is_empty
-                                     and value.geom_type != base_output_type})
-                if unexpected:
-                    raise ValueError(
-                        f"geometri tidak menjadi {base_output_type} setelah multipart dipecah: {unexpected}"
-                    )
-                if output_geometry_type.endswith(" Z"):
-                    # A Z-enabled layer needs a numeric coordinate for 2D
-                    # inputs. Existing Z values are retained; missing Z uses
-                    # 0 as a placeholder because Shapely rejects NaN Z values.
-                    frame[geom] = shapely.force_3d(frame.geometry.array, z=0.0)
-                else:
-                    frame[geom] = shapely.force_2d(frame.geometry.array)
-                for name, fam in g.schema:
-                    if name not in frame.columns:
-                        frame[name] = None
-                    if fam == "int":
-                        frame[name] = frame[name].astype("Int64") if frame[name].isna().any() else frame[name].astype("int64")
-                    elif fam == "float":
-                        frame[name] = frame[name].astype("float64")
-                    elif fam == "text":
-                        frame[name] = frame[name].astype("string")
-                columns = [name for name, _ in g.schema]
-                if o.add_source_fields:
-                    frame["SRC_REGION"] = sf.region_hint[:254]
-                    frame["SRC_FILE"] = sf.rel[:254]
-                    columns += ["SRC_REGION", "SRC_FILE"]
-                frame = frame[columns + [geom]]
-                write_dataframe(frame, str(temporary), layer=g.out_name,
-                                driver="OpenFileGDB", append=written > 0,
-                                geometry_type=output_geometry_type)
-                written += len(frame)
-                log.info("  %s: %d/%d fitur (total tertulis %d)", sf.rel,
-                         min(start + o.chunk_size, sf.features), sf.features, written)
+        with ProgressBar(g.total_features, f"Merge GDB {g.key}") as progress:
+            for sf in g.files:
+                layer = sf.rel.rsplit("/", 1)[-1]
+                for start in range(0, sf.features, o.chunk_size):
+                    frame = read_dataframe(str(sf.path), layer=layer, skip_features=start,
+                                            max_features=o.chunk_size)
+                    if o.target_crs and sf.crs and not crs_equal(sf.crs, o.target_crs):
+                        frame = frame.to_crs(o.target_crs)
+                    geom = frame.geometry.name
+                    source_read += len(frame)
+                    # Split multipart features into single-part features. GeoPandas
+                    # duplicates the attributes for every component, preserving
+                    # every point/line/polygon while standardizing the layer type.
+                    frame = frame.explode(index_parts=False, ignore_index=True)
+                    unexpected = sorted({value.geom_type for value in frame.geometry
+                                         if value is not None and not value.is_empty
+                                         and value.geom_type != base_output_type})
+                    if unexpected:
+                        raise ValueError(
+                            f"geometri tidak menjadi {base_output_type} setelah multipart dipecah: {unexpected}"
+                        )
+                    if output_geometry_type.endswith(" Z"):
+                        # A Z-enabled layer needs a numeric coordinate for 2D
+                        # inputs. Existing Z values are retained; missing Z uses
+                        # 0 as a placeholder because Shapely rejects NaN Z values.
+                        frame[geom] = shapely.force_3d(frame.geometry.array, z=0.0)
+                    else:
+                        frame[geom] = shapely.force_2d(frame.geometry.array)
+                    for name, fam in g.schema:
+                        if name not in frame.columns:
+                            frame[name] = None
+                        if fam == "int":
+                            frame[name] = frame[name].astype("Int64") if frame[name].isna().any() else frame[name].astype("int64")
+                        elif fam == "float":
+                            frame[name] = frame[name].astype("float64")
+                        elif fam == "text":
+                            frame[name] = frame[name].astype("string")
+                    columns = [name for name, _ in g.schema]
+                    if o.add_source_fields:
+                        frame["SRC_REGION"] = sf.region_hint[:254]
+                        frame["SRC_FILE"] = sf.rel[:254]
+                        columns += ["SRC_REGION", "SRC_FILE"]
+                    frame = frame[columns + [geom]]
+                    write_dataframe(frame, str(temporary), layer=g.out_name,
+                                    driver="OpenFileGDB", append=written > 0,
+                                    geometry_type=output_geometry_type)
+                    written += len(frame)
+                    progress.update(min(start + o.chunk_size, sf.features) - min(start, sf.features))
+                    log.info("  %s: %d/%d fitur (total tertulis %d)", sf.rel,
+                             min(start + o.chunk_size, sf.features), sf.features, written)
         return source_read, written
     except Exception:
         shutil.rmtree(temporary, ignore_errors=True)
