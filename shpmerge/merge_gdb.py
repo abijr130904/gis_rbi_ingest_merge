@@ -106,6 +106,7 @@ def _write_group(g: Group, o: Options, temporary: Path) -> tuple[int, int]:
 
 
 def merge_gdb_tree(input_path: Path, output_root: Path, *, categories: list[str] | None = None,
+                   exclude_categories: list[str] | None = None,
                    dry_run: bool = False, overwrite: bool = False,
                    chunk_size: int = 50_000, target_crs: str | None = None,
                    include_single: bool = False, add_source_fields: bool = True,
@@ -120,7 +121,10 @@ def merge_gdb_tree(input_path: Path, output_root: Path, *, categories: list[str]
         raise FileNotFoundError(f"tidak ditemukan direktori .gdb di {input_path}")
     wanted = {normalize_name(Path(name).stem if Path(name).suffix.casefold() == ".gdb" else name)
               for name in (categories or [])}
+    excluded = {normalize_name(Path(name).stem if Path(name).suffix.casefold() == ".gdb" else name)
+                for name in (exclude_categories or [])}
     grouped: dict[str, list[SourceFile]] = defaultdict(list)
+    excluded_found: set[str] = set()
     inventory_progress = ProgressBar(len(gdbs), "Tahap 1/3: Inventarisasi GDB", unit="GDB")
     try:
         for gdb in gdbs:
@@ -134,6 +138,9 @@ def merge_gdb_tree(input_path: Path, output_root: Path, *, categories: list[str]
                     if geometry is None:
                         continue
                     key = normalize_name(str(layer))
+                    if key in excluded:
+                        excluded_found.add(key)
+                        continue
                     if wanted and key not in wanted:
                         continue
                     sf = SourceFile(path=gdb, rel=f"{gdb.name}/{layer}", stem=str(layer),
@@ -149,10 +156,12 @@ def merge_gdb_tree(input_path: Path, output_root: Path, *, categories: list[str]
                 inventory_progress.update()
     finally:
         inventory_progress.close()
-    missing = sorted(wanted - set(grouped))
+    missing = sorted((wanted - excluded) - set(grouped))
     if missing:
         log.warning("Kategori tidak ditemukan: %s", ", ".join(missing))
     if not grouped:
+        if excluded_found:
+            return []
         raise FileNotFoundError("tidak ditemukan layer GDB yang cocok dengan kategori")
 
     opts = Options(input_dir=input_path, output_dir=output_root, dry_run=dry_run,

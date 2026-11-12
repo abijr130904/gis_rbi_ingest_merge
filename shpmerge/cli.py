@@ -48,6 +48,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="tambah SRC_REGION & SRC_FILE (nonaktifkan: --no-add-source-fields)")
     p.add_argument("--report", help="path laporan JSON (CSV disimpan di sebelahnya)")
     p.add_argument("--category", action="append", default=[], help="filter kategori (boleh berulang)")
+    p.add_argument("--exclude-category", action="append", default=[],
+                   help="lewati kategori pada --merge-gdb (boleh berulang)")
     p.add_argument("--strict-schema", action="store_true", help="skema harus identik (nama, tipe, urutan)")
     p.add_argument("--allow-schema-union", action="store_true",
                    help="izinkan kolom hilang (diisi NULL) selama tipe tidak konflik")
@@ -99,6 +101,8 @@ def print_summary(r: dict) -> None:
 def main(argv=None) -> int:
     parser = build_parser()
     a = parser.parse_args(argv)
+    if a.exclude_category and not a.merge_gdb:
+        parser.error("--exclude-category hanya berlaku dengan --merge-gdb")
     logging.basicConfig(level=logging.DEBUG if a.verbose else logging.WARNING,
                         format="%(asctime)s %(levelname)s %(message)s")
     inp, out = Path(a.input), Path(a.output)
@@ -128,7 +132,8 @@ def main(argv=None) -> int:
         try:
             results = _with_running_indicator(
                 "Merge GDB",
-                lambda: merge_gdb_tree(inp, out, categories=a.category, dry_run=a.dry_run,
+                lambda: merge_gdb_tree(inp, out, categories=a.category,
+                                       exclude_categories=a.exclude_category, dry_run=a.dry_run,
                                        overwrite=a.overwrite, chunk_size=a.chunk_size,
                                        target_crs=a.target_crs, include_single=a.include_single,
                                        add_source_fields=a.add_source_fields,
@@ -165,6 +170,8 @@ def main(argv=None) -> int:
                     print(f"  Hasil dissolve : {_format_count(merged_count)} -> "
                           f"{_format_count(final_count)} fitur.")
             print(f"Selesai: {len(results)} kategori GDB diproses.")
+        if a.exclude_category:
+            print("Kategori yang dilewati: " + ", ".join(a.exclude_category))
         return 0
     if not inp.exists():
         parser.error(f"input tidak ditemukan: {inp}")
