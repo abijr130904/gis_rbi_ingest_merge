@@ -69,7 +69,10 @@ def _write_group(g: Group, o: Options, temporary: Path) -> tuple[int, int]:
                         f"geometri tidak menjadi {base_output_type} setelah multipart dipecah: {unexpected}"
                     )
                 if output_geometry_type.endswith(" Z"):
-                    frame[geom] = shapely.force_3d(frame.geometry.array, z=float("nan"))
+                    # A Z-enabled layer needs a numeric coordinate for 2D
+                    # inputs. Existing Z values are retained; missing Z uses
+                    # 0 as a placeholder because Shapely rejects NaN Z values.
+                    frame[geom] = shapely.force_3d(frame.geometry.array, z=0.0)
                 else:
                     frame[geom] = shapely.force_2d(frame.geometry.array)
                 for name, fam in g.schema:

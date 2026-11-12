@@ -147,7 +147,11 @@ def validate_group(g: Group, o: Options) -> Group:
         if len(gtypes) > 1 or (gtypes and gtypes[0] not in {"Point", "LineString", "Polygon"}):
             problems.append(f"GEOMETRI_TIDAK_KOMPATIBEL: {gtypes} (keluarga geometri berbeda/tidak dikenal)")
     elif len(gtypes) > 1 or any(t != output_type for t in gtypes):
-        g.warnings.append(f"GEOMETRI_DISERAGAMKAN: {gtypes} -> {output_type}; multipart dipecah")
+        detail = f"GEOMETRI_DISERAGAMKAN: {gtypes} -> {output_type}; multipart dipecah"
+        if output_type.endswith(" Z") and any(
+                not (t.endswith(" Z") or t.startswith("3D ")) for t in gtypes):
+            detail += "; koordinat Z sumber 2D diisi 0"
+        g.warnings.append(detail)
 
     # --- Skema ---
     union: dict[str, str] = {}
