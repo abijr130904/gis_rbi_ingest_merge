@@ -23,19 +23,24 @@ MEASURE_COLS = {"shape_leng", "shape_length", "shape_len", "shape_area"}
 
 
 def is_polygon_group(g: Group) -> bool:
-    return bool(g.files) and "Polygon" in g.files[0].geometry_type
+    polygon_types = {"Polygon", "MultiPolygon"}
+    types = {f.geometry_type.removesuffix(" Z").removeprefix("3D ") for f in g.files}
+    return bool(types) and types <= polygon_types
 
 
 def _polygons_only(geom):
-    """Ambil bagian poligon saja (make_valid dapat menghasilkan GeometryCollection)."""
-    if geom is None or geom.is_empty or geom.geom_type in ("Polygon", "MultiPolygon"):
+    """Ekstrak poligon secara rekursif dan kembalikan tipe seragam MultiPolygon."""
+    if geom is None or geom.is_empty:
+        return None
+    if geom.geom_type == "Polygon":
+        return shapely.MultiPolygon([geom])
+    if geom.geom_type == "MultiPolygon":
         return geom
     polys = []
     for part in shapely.get_parts(geom):
-        if part.geom_type == "Polygon":
-            polys.append(part)
-        elif part.geom_type == "MultiPolygon":
-            polys.extend(part.geoms)
+        polygonal = _polygons_only(part)
+        if polygonal is not None:
+            polys.extend(polygonal.geoms)
     return shapely.MultiPolygon(polys) if polys else None
 
 
@@ -106,7 +111,14 @@ def dissolve_group(g: Group, o: Options, out_dir: Path) -> None:
     """Dissolve ke <output>\\dissolved\\NAMA.shp:
     tahap 1 per file sumber + atribut identik; tahap 2 menyatukan bentuk yang tumpang tindih.
     Kegagalan hanya menjadi peringatan; status MERGED tidak diubah."""
-    if not (o.dissolve and g.output and is_polygon_group(g)):
+    if not (o.dissolve and g.output):
+        return
+    if not is_polygon_group(g):
+        if any("Polygon" in f.geometry_type for f in g.files):
+            g.warnings.append(
+                "DISSOLVE_DILEWATI: tipe geometri campuran; semua fitur tetap tersimpan "
+                "di GDB gabungan"
+            )
         return
     name = g.out_name
     is_gdb = Path(g.output).suffix.casefold() == ".gdb"
@@ -197,7 +209,11 @@ def dissolve_group(g: Group, o: Options, out_dir: Path) -> None:
 
         if is_gdb:
             tmp_output = tmp / f"{dissolved_name}.gdb"
-            write_dataframe(res, str(tmp_output), layer=name, driver="OpenFileGDB")
+            # Dissolve may yield Polygon, MultiPolygon, or nested collections
+            # after make_valid/union. Normalize above, then declare the concrete
+            # FileGDB layer type to avoid GDAL's unsupported mixed-type error.
+            write_dataframe(res, str(tmp_output), layer=name, driver="OpenFileGDB",
+                            geometry_type="MultiPolygon", promote_to_multi=True)
             info = read_info(str(tmp_output), layer=name)
         else:
             tmp_output = tmp / f"{name}.shp"

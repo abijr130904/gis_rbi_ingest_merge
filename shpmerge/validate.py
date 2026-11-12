@@ -45,6 +45,28 @@ def _promote_family(left: str, right: str) -> str:
     return "text"
 
 
+def normalized_geometry_type(geometry_types: list[str] | set[str]) -> str | None:
+    """Return one single-part output type for compatible singular/multi variants.
+
+    Different geometry families cannot be converted without changing meaning.
+    """
+    families = {"Point": "Point", "MultiPoint": "Point",
+                "LineString": "LineString", "MultiLineString": "LineString",
+                "Polygon": "Polygon", "MultiPolygon": "Polygon"}
+    parsed = []
+    for raw in geometry_types:
+        value = str(raw).strip()
+        has_z = value.endswith(" Z") or value.startswith("3D ")
+        base = value[:-2] if value.endswith(" Z") else value[3:] if value.startswith("3D ") else value
+        if base not in families:
+            return None
+        parsed.append((base, families[base], has_z))
+    if not parsed or len({family for _, family, _ in parsed}) != 1:
+        return None
+    family = parsed[0][1]
+    return family + (" Z" if any(has_z for _, _, has_z in parsed) else "")
+
+
 def inspect_file(sf: SourceFile, encoding: str | None = None) -> None:
     miss = missing_components(sf.path, sf.components)
     if miss:
@@ -120,14 +142,12 @@ def validate_group(g: Group, o: Options) -> Group:
 
     # --- Geometri ---
     gtypes = sorted({f.geometry_type for f in g.files})
-    if len(gtypes) > 1:
-        # FileGDB can store mixed point variants when the layer is created as
-        # Unknown. Keep Z values as supplied; the writer handles this case.
-        point_variants = {t.removesuffix(" Z") for t in gtypes}
-        if point_variants <= {"Point", "MultiPoint"}:
-            g.warnings.append(f"GEOMETRI_TITIK_CAMPURAN: {gtypes} (ditulis sebagai Unknown)")
-        else:
-            problems.append(f"GEOMETRI_BERBEDA: {gtypes}")
+    output_type = normalized_geometry_type(set(gtypes))
+    if output_type is None:
+        if len(gtypes) > 1 or (gtypes and gtypes[0] not in {"Point", "LineString", "Polygon"}):
+            problems.append(f"GEOMETRI_TIDAK_KOMPATIBEL: {gtypes} (keluarga geometri berbeda/tidak dikenal)")
+    elif len(gtypes) > 1 or any(t != output_type for t in gtypes):
+        g.warnings.append(f"GEOMETRI_DISERAGAMKAN: {gtypes} -> {output_type}; multipart dipecah")
 
     # --- Skema ---
     union: dict[str, str] = {}

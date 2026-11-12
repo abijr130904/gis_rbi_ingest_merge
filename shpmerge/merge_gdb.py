@@ -11,10 +11,11 @@ from pathlib import Path
 import pyogrio
 from pyogrio import list_layers, read_dataframe, read_info, write_dataframe
 from pyproj import CRS
+import shapely
 from .detect import normalize_name, safe_output_name
 from .dissolve import dissolve_group
 from .models import Group, Options, SourceFile
-from .validate import crs_equal, validate_group
+from .validate import crs_equal, normalized_geometry_type, validate_group
 
 log = logging.getLogger("shpmerge")
 
@@ -38,11 +39,15 @@ def _discover_gdbs(input_path: Path, output_root: Path) -> list[Path]:
     return sorted(set(found), key=lambda p: str(p).casefold())
 
 
-def _write_group(g: Group, o: Options, temporary: Path) -> int:
+def _write_group(g: Group, o: Options, temporary: Path) -> tuple[int, int]:
     try:
         written = 0
+        source_read = 0
         geometry_types = {sf.geometry_type for sf in g.files}
-        output_geometry_type = "Unknown" if len(geometry_types) > 1 else next(iter(geometry_types))
+        output_geometry_type = normalized_geometry_type(geometry_types)
+        if output_geometry_type is None:
+            raise ValueError(f"tipe geometri tidak dapat diseragamkan: {sorted(geometry_types)}")
+        base_output_type = output_geometry_type.removesuffix(" Z")
         for sf in g.files:
             layer = sf.rel.rsplit("/", 1)[-1]
             for start in range(0, sf.features, o.chunk_size):
@@ -51,6 +56,22 @@ def _write_group(g: Group, o: Options, temporary: Path) -> int:
                 if o.target_crs and sf.crs and not crs_equal(sf.crs, o.target_crs):
                     frame = frame.to_crs(o.target_crs)
                 geom = frame.geometry.name
+                source_read += len(frame)
+                # Split multipart features into single-part features. GeoPandas
+                # duplicates the attributes for every component, preserving
+                # every point/line/polygon while standardizing the layer type.
+                frame = frame.explode(index_parts=False, ignore_index=True)
+                unexpected = sorted({value.geom_type for value in frame.geometry
+                                     if value is not None and not value.is_empty
+                                     and value.geom_type != base_output_type})
+                if unexpected:
+                    raise ValueError(
+                        f"geometri tidak menjadi {base_output_type} setelah multipart dipecah: {unexpected}"
+                    )
+                if output_geometry_type.endswith(" Z"):
+                    frame[geom] = shapely.force_3d(frame.geometry.array, z=float("nan"))
+                else:
+                    frame[geom] = shapely.force_2d(frame.geometry.array)
                 for name, fam in g.schema:
                     if name not in frame.columns:
                         frame[name] = None
@@ -72,7 +93,7 @@ def _write_group(g: Group, o: Options, temporary: Path) -> int:
                 written += len(frame)
                 log.info("  %s: %d/%d fitur (total tertulis %d)", sf.rel,
                          min(start + o.chunk_size, sf.features), sf.features, written)
-        return written
+        return source_read, written
     except Exception:
         shutil.rmtree(temporary, ignore_errors=True)
         raise
@@ -166,10 +187,14 @@ def merge_gdb_tree(input_path: Path, output_root: Path, *, categories: list[str]
             log.warning("Output sudah ada, kategori dilewati %s: %s (gunakan --overwrite)", g.key, dest)
             continue
         temporary = dest.with_name(f".{dest.stem}.tmp_{uuid.uuid4().hex[:8]}.gdb")
-        written = _write_group(g, group_options, temporary)
-        if written != count:
+        source_read, written = _write_group(g, group_options, temporary)
+        if source_read != count:
             shutil.rmtree(temporary, ignore_errors=True)
-            raise RuntimeError(f"fitur tertulis {written} != {count} untuk kategori {g.key}")
+            raise RuntimeError(f"fitur sumber terbaca {source_read} != {count} untuk kategori {g.key}")
+        output_count = int(read_info(str(temporary), layer=g.out_name)["features"])
+        if output_count != written:
+            shutil.rmtree(temporary, ignore_errors=True)
+            raise RuntimeError(f"fitur output {output_count} != {written} untuk kategori {g.key}")
         backup = dest.with_name(f".{dest.stem}.backup_{uuid.uuid4().hex[:8]}.gdb")
         moved_old = False
         try:
