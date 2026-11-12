@@ -121,27 +121,34 @@ def merge_gdb_tree(input_path: Path, output_root: Path, *, categories: list[str]
     wanted = {normalize_name(Path(name).stem if Path(name).suffix.casefold() == ".gdb" else name)
               for name in (categories or [])}
     grouped: dict[str, list[SourceFile]] = defaultdict(list)
-    for gdb in gdbs:
-        try:
-            layers = list_layers(str(gdb))
-        except Exception as exc:
-            log.warning("GDB tidak dapat dibaca %s: %s", gdb, exc)
-            continue
-        for layer, geometry in layers:
-            if geometry is None:
-                continue
-            key = normalize_name(str(layer))
-            if wanted and key not in wanted:
-                continue
-            sf = SourceFile(path=gdb, rel=f"{gdb.name}/{layer}", stem=str(layer),
-                            region_hint=gdb.parent.name, key=key)
+    inventory_progress = ProgressBar(len(gdbs), "Inventarisasi GDB", unit="GDB")
+    try:
+        for gdb in gdbs:
             try:
-                sf.info = read_info(str(gdb), layer=str(layer))
-                if int(sf.info["features"]) < 0:
-                    raise ValueError("jumlah fitur tidak dapat dihitung")
-            except Exception as exc:
-                sf.error = f"TIDAK_BISA_DIBACA: {exc}"
-            grouped[key].append(sf)
+                try:
+                    layers = list_layers(str(gdb))
+                except Exception as exc:
+                    log.warning("GDB tidak dapat dibaca %s: %s", gdb, exc)
+                    continue
+                for layer, geometry in layers:
+                    if geometry is None:
+                        continue
+                    key = normalize_name(str(layer))
+                    if wanted and key not in wanted:
+                        continue
+                    sf = SourceFile(path=gdb, rel=f"{gdb.name}/{layer}", stem=str(layer),
+                                    region_hint=gdb.parent.name, key=key)
+                    try:
+                        sf.info = read_info(str(gdb), layer=str(layer))
+                        if int(sf.info["features"]) < 0:
+                            raise ValueError("jumlah fitur tidak dapat dihitung")
+                    except Exception as exc:
+                        sf.error = f"TIDAK_BISA_DIBACA: {exc}"
+                    grouped[key].append(sf)
+            finally:
+                inventory_progress.update()
+    finally:
+        inventory_progress.close()
     missing = sorted(wanted - set(grouped))
     if missing:
         log.warning("Kategori tidak ditemukan: %s", ", ".join(missing))
