@@ -135,12 +135,12 @@ def dissolve_group(g: Group, o: Options, out_dir: Path) -> None:
         g.warnings.append("DISSOLVE_DILEWATI: hasil dissolve sudah ada (gunakan --overwrite)")
         return
     tmp = _new_tmp(ddir)
-    progress = ProgressBar(5, f"Dissolve {name}", unit="tahap")
+    progress = ProgressBar(5, "Tahap 3/3 Dissolve: baca data", unit="tahap")
     try:
         gdf = read_dataframe(g.output, **({"layer": name} if is_gdb else {}))
         gname = gdf.geometry.name
         n_in = len(gdf)
-        progress.update()
+        progress.update(label="Tahap 3/3 Dissolve: validasi geometri")
         if "SRC_FILE" not in gdf.columns:
             if len(g.files) != 1:
                 raise ValueError("kolom SRC_FILE tidak ada; dissolve per wilayah butuh field sumber "
@@ -162,7 +162,7 @@ def dissolve_group(g: Group, o: Options, out_dir: Path) -> None:
             g.warnings.append(f"DISSOLVE: {int(bad.sum())} geometri invalid diperbaiki (make_valid) "
                               "hanya pada file dissolve; file gabungan tidak diubah")
             geom.loc[bad] = geom.loc[bad].make_valid()
-        progress.update()
+        progress.update(label="Tahap 3/3 Dissolve: agregasi atribut")
 
         ignore = MEASURE_COLS | {c.casefold() for c in o.dissolve_ignore}
         attr_cols = [c for c in gdf.columns if c != gname]
@@ -190,7 +190,7 @@ def dissolve_group(g: Group, o: Options, out_dir: Path) -> None:
         res = res[res.geometry.notna() & ~res.geometry.is_empty].reset_index(drop=True)
         if res.empty:
             raise ValueError("hasil dissolve kosong")
-        progress.update()
+        progress.update(label="Tahap 3/3 Dissolve: cek overlap")
 
         # tahap 2: satukan bentuk yang saling tumpang tindih
         n_rows = len(res)
@@ -203,7 +203,7 @@ def dissolve_group(g: Group, o: Options, out_dir: Path) -> None:
                     f"DISSOLVE: {n_rows} bentuk -> {n_comp} setelah fitur yang saling tumpang tindih "
                     f"disatukan (irisan > {o.dissolve_overlap_min:.0%} luas bentuk terkecil); "
                     f"{n_mixed} hasil beratribut campur (kolom dikosongkan, lihat ATR_CAMPUR)")
-        progress.update()
+        progress.update(label="Tahap 3/3 Dissolve: simpan hasil")
         if "ATR_CAMPUR" not in res.columns:
             res["ATR_CAMPUR"] = 0
 
@@ -227,7 +227,7 @@ def dissolve_group(g: Group, o: Options, out_dir: Path) -> None:
             info = read_info(str(tmp_output))
         if int(info["features"]) != len(res):
             raise ValueError("verifikasi hasil dissolve gagal")
-        progress.update()
+        progress.update(label="Tahap 3/3 Dissolve: selesai")
         if is_gdb:
             final = dissolved_gdb
             backup = ddir / f".{dissolved_name}.backup_{uuid.uuid4().hex[:8]}.gdb"

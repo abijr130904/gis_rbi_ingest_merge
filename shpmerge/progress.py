@@ -17,9 +17,12 @@ class ProgressBar:
         self._closed = False
         self._render(force=True)
 
-    def update(self, amount: int = 1) -> None:
+    def update(self, amount: int = 1, *, label: str | None = None) -> None:
         self.current = min(self.total, self.current + max(0, int(amount)))
-        self._render()
+        changed_label = label is not None and label != self.label
+        if changed_label:
+            self.label = label
+        self._render(force=changed_label)
 
     def _render(self, force: bool = False) -> None:
         percent = 100 if self.total == 0 else int(self.current * 100 / self.total)
@@ -28,7 +31,9 @@ class ProgressBar:
         width = 24
         filled = width if self.total == 0 else int(width * self.current / self.total)
         bar = "=" * filled + " " * (width - filled)
-        line = f"{self.label[:28]:28} [{bar}] {percent:3d}% ({self.current}/{self.total} {self.unit})"
+        current = f"{self.current:,}".replace(",", ".")
+        total = f"{self.total:,}".replace(",", ".")
+        line = f"{self.label[:48]:48} [{bar}] {percent:3d}% ({current}/{total} {self.unit})"
         # Print complete lines instead of carriage-return updates so captured
         # logs and secure terminal streams always show the percentage.
         self.stream.write(line + "\n")

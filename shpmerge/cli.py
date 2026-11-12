@@ -72,6 +72,10 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _format_count(value: int | None) -> str:
+    return "-" if value is None else f"{value:,}".replace(",", ".")
+
+
 def print_summary(r: dict) -> None:
     t = r["totals"]
     print(f"\nSHP ditemukan: {t['shp_found']} | kategori: {t['categories']} | "
@@ -95,7 +99,7 @@ def print_summary(r: dict) -> None:
 def main(argv=None) -> int:
     parser = build_parser()
     a = parser.parse_args(argv)
-    logging.basicConfig(level=logging.DEBUG if a.verbose else logging.INFO,
+    logging.basicConfig(level=logging.DEBUG if a.verbose else logging.WARNING,
                         format="%(asctime)s %(levelname)s %(message)s")
     inp, out = Path(a.input), Path(a.output)
     if a.extract_gdb:
@@ -139,10 +143,28 @@ def main(argv=None) -> int:
             )
         except Exception as exc:
             parser.error(f"merge GDB gagal: {exc}")
-        for name, count, path in results:
-            print(f"{name}: {count} fitur -> {path}")
-        print("DRY-RUN: tidak ada file yang ditulis." if a.dry_run
-              else f"Selesai: {len(results)} GDB kategori digabung.")
+        if a.dry_run:
+            print("\nRENCANA MERGE GDB (dry-run)")
+            for name, source_count, _, _, path in results:
+                print(f"  Kategori       : {name}\n"
+                      f"  Fitur sumber   : {_format_count(source_count)}\n"
+                      f"  Output rencana : {path}")
+            print("DRY-RUN: tidak ada file yang ditulis.")
+        else:
+            print("\nHASIL AKHIR MERGE GDB")
+            for name, source_count, merged_count, final_count, path in results:
+                print(f"  Kategori       : {name}")
+                print(f"  Fitur sumber   : {_format_count(source_count)}")
+                print(f"  Setelah merge  : {_format_count(merged_count)}")
+                print(f"  Fitur akhir    : {_format_count(final_count)}")
+                print(f"  Lokasi output  : {path}")
+                if merged_count is not None and source_count != merged_count:
+                    print("  Keterangan     : fitur multipart dipecah menjadi fitur tunggal.")
+                if (merged_count is not None and final_count is not None
+                        and merged_count != final_count):
+                    print(f"  Hasil dissolve : {_format_count(merged_count)} -> "
+                          f"{_format_count(final_count)} fitur.")
+            print(f"Selesai: {len(results)} kategori GDB diproses.")
         return 0
     if not inp.exists():
         parser.error(f"input tidak ditemukan: {inp}")

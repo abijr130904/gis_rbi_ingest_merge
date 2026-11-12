@@ -49,7 +49,7 @@ def _write_group(g: Group, o: Options, temporary: Path) -> tuple[int, int]:
         if output_geometry_type is None:
             raise ValueError(f"tipe geometri tidak dapat diseragamkan: {sorted(geometry_types)}")
         base_output_type = output_geometry_type.removesuffix(" Z")
-        with ProgressBar(g.total_features, f"Merge GDB {g.key}") as progress:
+        with ProgressBar(g.total_features, f"Tahap 2/3 Gabung: {g.key}", unit="fitur sumber") as progress:
             for sf in g.files:
                 layer = sf.rel.rsplit("/", 1)[-1]
                 for start in range(0, sf.features, o.chunk_size):
@@ -113,7 +113,7 @@ def merge_gdb_tree(input_path: Path, output_root: Path, *, categories: list[str]
                    allow_unknown_crs: bool = False, skip_bad_files: bool = False,
                    dissolve: bool = True, dissolve_ignore: list[str] | None = None,
                    dissolve_overlap: bool = True,
-                   dissolve_overlap_min: float = 0.01) -> list[tuple[str, int, str]]:
+                   dissolve_overlap_min: float = 0.01) -> list[tuple[str, int, int | None, int | None, str]]:
     """Merge same-named GDB layers using the shared SHP category validation rules."""
     gdbs = _discover_gdbs(input_path, output_root)
     if not gdbs:
@@ -121,7 +121,7 @@ def merge_gdb_tree(input_path: Path, output_root: Path, *, categories: list[str]
     wanted = {normalize_name(Path(name).stem if Path(name).suffix.casefold() == ".gdb" else name)
               for name in (categories or [])}
     grouped: dict[str, list[SourceFile]] = defaultdict(list)
-    inventory_progress = ProgressBar(len(gdbs), "Inventarisasi GDB", unit="GDB")
+    inventory_progress = ProgressBar(len(gdbs), "Tahap 1/3: Inventarisasi GDB", unit="GDB")
     try:
         for gdb in gdbs:
             try:
@@ -168,7 +168,7 @@ def merge_gdb_tree(input_path: Path, output_root: Path, *, categories: list[str]
         CRS.from_user_input(target_crs)
     groups = [Group(key=k, files=sorted(v, key=lambda f: f.rel.casefold()),
                     out_name=safe_output_name(k)) for k, v in sorted(grouped.items())]
-    results = []
+    results: list[tuple[str, int, int | None, int | None, str]] = []
     output_root = output_root.resolve()
     if not dry_run:
         output_root.mkdir(parents=True, exist_ok=True)
@@ -189,7 +189,7 @@ def merge_gdb_tree(input_path: Path, output_root: Path, *, categories: list[str]
             log.info("Kategori %s hanya memiliki satu sumber; dilewati (gunakan --include-single)", g.key)
             continue
         if dry_run:
-            results.append((g.key, count, str(dest)))
+            results.append((g.key, count, None, None, str(dest)))
             continue
         group_options = opts
         if g.status == "SINGLE_SOURCE":
@@ -243,5 +243,5 @@ def merge_gdb_tree(input_path: Path, output_root: Path, *, categories: list[str]
             shutil.rmtree(backup, ignore_errors=True)
         g.status, g.output, g.output_features = "MERGED", str(dest), written
         dissolve_group(g, opts, output_root)
-        results.append((g.key, g.output_features or written, str(dest)))
+        results.append((g.key, count, written, g.output_features or written, str(dest)))
     return results
