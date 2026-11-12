@@ -122,15 +122,15 @@ def dissolve_group(g: Group, o: Options, out_dir: Path) -> None:
         return
     name = g.out_name
     is_gdb = Path(g.output).suffix.casefold() == ".gdb"
-    # GDB merge output already occupies <name>.gdb in out_dir, so place the
-    # dissolved GDB beside it under a distinct name. Shapefile behavior stays
-    # in the existing dissolved subfolder.
+    # For GDB merges, replace the merged layer in-place after the dissolved
+    # result is fully written. Shapefile behavior stays in the dissolved folder.
     ddir = out_dir if is_gdb else out_dir / DISSOLVE_DIR
     ddir.mkdir(parents=True, exist_ok=True)
-    dissolved_name = f"{name}_dissolved" if is_gdb else name
+    dissolved_name = name
     dissolved_gdb = ddir / f"{dissolved_name}.gdb"
-    if ((dissolved_gdb.exists() if is_gdb else bool(existing_outputs(ddir, name)))
-            and not o.overwrite):
+    same_as_merge_output = is_gdb and Path(g.output).resolve() == dissolved_gdb.resolve()
+    if ((dissolved_gdb.exists() and not same_as_merge_output
+         if is_gdb else bool(existing_outputs(ddir, name))) and not o.overwrite):
         g.warnings.append("DISSOLVE_DILEWATI: hasil dissolve sudah ada (gunakan --overwrite)")
         return
     tmp = _new_tmp(ddir)
@@ -227,7 +227,7 @@ def dissolve_group(g: Group, o: Options, out_dir: Path) -> None:
             moved_old = False
             try:
                 if final.exists():
-                    if not o.overwrite:
+                    if not same_as_merge_output and not o.overwrite:
                         raise FileExistsError(f"hasil dissolve sudah ada: {final}")
                     os.replace(final, backup)
                     moved_old = True
@@ -243,6 +243,17 @@ def dissolve_group(g: Group, o: Options, out_dir: Path) -> None:
             final = ddir / f"{name}.shp"
         g.dissolved_output = str(final)
         g.dissolved_features = len(res)
+        if is_gdb and same_as_merge_output:
+            g.output_features = len(res)
+            legacy_output = ddir / f"{name}_dissolved.gdb"
+            if legacy_output.exists():
+                try:
+                    shutil.rmtree(legacy_output)
+                    log.info("Output dissolve lama dihapus: %s", legacy_output)
+                except OSError as exc:
+                    g.warnings.append(
+                        f"DISSOLVE_OUTPUT_LAMA_TIDAK_DIHAPUS: {legacy_output}: {exc}"
+                    )
         g.warnings.append(f"DISSOLVE: {n_in} fitur -> {len(res)} fitur "
                           "(per file sumber dan atribut identik, plus tumpang tindih)")
         log.info("Dissolve %s: %d fitur -> %d (%s)", g.key, n_in, len(res), g.dissolved_output)

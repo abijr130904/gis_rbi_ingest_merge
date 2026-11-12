@@ -232,6 +232,6 @@ def merge_gdb_tree(input_path: Path, output_root: Path, *, categories: list[str]
         if moved_old:
             shutil.rmtree(backup, ignore_errors=True)
         g.status, g.output, g.output_features = "MERGED", str(dest), written
-        results.append((g.key, written, str(dest)))
         dissolve_group(g, opts, output_root)
+        results.append((g.key, g.output_features or written, str(dest)))
     return results
