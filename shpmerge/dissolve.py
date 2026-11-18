@@ -30,7 +30,11 @@ def is_polygon_group(g: Group) -> bool:
 
 
 def _polygons_only(geom):
-    """Ekstrak poligon secara rekursif dan kembalikan tipe seragam MultiPolygon."""
+    """Ekstrak poligon bertingkat tanpa rekursi Python.
+
+    make_valid/union dapat menghasilkan GeometryCollection bersarang sangat dalam;
+    menelusurinya secara rekursif dapat melebihi recursion limit Python.
+    """
     if geom is None or geom.is_empty:
         return None
     if geom.geom_type == "Polygon":
@@ -38,10 +42,18 @@ def _polygons_only(geom):
     if geom.geom_type == "MultiPolygon":
         return geom
     polys = []
-    for part in shapely.get_parts(geom):
-        polygonal = _polygons_only(part)
-        if polygonal is not None:
-            polys.extend(polygonal.geoms)
+    pending = [geom]
+    while pending:
+        current = pending.pop()
+        if current is None or current.is_empty:
+            continue
+        if current.geom_type == "Polygon":
+            polys.append(current)
+        elif current.geom_type == "MultiPolygon":
+            polys.extend(current.geoms)
+        else:
+            # Keep source order while using the list as a stack.
+            pending.extend(reversed(shapely.get_parts(current)))
     return shapely.MultiPolygon(polys) if polys else None
 
 
