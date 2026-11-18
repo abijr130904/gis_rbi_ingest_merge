@@ -7,6 +7,7 @@ import uuid
 from pathlib import Path
 
 import geopandas as gpd
+import numpy as np
 import pandas as pd
 import shapely
 from pyogrio import read_dataframe, read_info, write_dataframe
@@ -69,18 +70,38 @@ def _overlap_components(geoms, min_ratio: float) -> list[int]:
             x = parent[x]
         return x
 
-    areas = shapely.area(geoms)
+    areas = shapely.area(geoms) if min_ratio > 0 else None
     tree = STRtree(geoms)
-    left, right = tree.query(geoms, predicate="intersects")
-    for i, j in zip(left, right):
-        if i >= j or find(i) == find(j):
+    # Query in batches to cap temporary memory on large polygon layers.
+    # Shapely/GEOS vectorizes the expensive predicate/overlay work; Python only
+    # handles the comparatively small union-find step for candidate pairs.
+    batch_size = 10_000
+    for start in range(0, n, batch_size):
+        left, right = tree.query(geoms[start:start + batch_size], predicate="intersects")
+        left = left + start
+        forward = left < right
+        left, right = left[forward], right[forward]
+        if not len(left):
             continue
-        smaller = min(areas[i], areas[j])
-        if smaller <= 0:
-            continue
-        inter = shapely.area(shapely.intersection(geoms[i], geoms[j]))
-        if inter > min_ratio * smaller:
-            parent[find(i)] = find(j)
+
+        if min_ratio == 0:
+            # For valid polygons, interior-interior intersection dimension 2
+            # means positive-area overlap. This avoids constructing intersection
+            # geometries just to measure their area.
+            overlaps = shapely.relate_pattern(geoms[left], geoms[right], "2********")
+        else:
+            smaller = np.minimum(areas[left], areas[right])
+            positive_area = smaller > 0
+            if not positive_area.any():
+                continue
+            left, right, smaller = left[positive_area], right[positive_area], smaller[positive_area]
+            intersection_areas = shapely.area(shapely.intersection(geoms[left], geoms[right]))
+            overlaps = intersection_areas > min_ratio * smaller
+
+        for i, j in zip(left[overlaps], right[overlaps]):
+            root_i, root_j = find(int(i)), find(int(j))
+            if root_i != root_j:
+                parent[root_i] = root_j
     return [find(i) for i in range(n)]
 
 
