@@ -26,10 +26,11 @@ def run_pipeline(o: Options) -> dict:
         CRS.from_user_input(o.target_crs)  # gagal cepat jika CRS target tidak valid
 
     files = find_shapefiles(o.input_dir, o.output_dir)
-    by_key = group_files(files)
+    aliases = {normalize_name(k): normalize_name(v) for k, v in o.category_aliases.items()}
+    by_key = group_files(files, aliases)
     groups = [Group(key=k, files=v, out_name=safe_output_name(k)) for k, v in sorted(by_key.items())]
 
-    wanted = {normalize_name(c) for c in o.categories}
+    wanted = {normalize_name(c, aliases) for c in o.categories}
     for g in groups:
         if wanted and g.key not in wanted:
             g.status = "SKIPPED"

@@ -18,6 +18,7 @@ class Options:
     add_source_fields: bool = True
     report: Path | None = None
     categories: list[str] = field(default_factory=list)
+    category_aliases: dict[str, str] = field(default_factory=dict)
     strict_schema: bool = False
     allow_schema_union: bool = False
     allow_unknown_crs: bool = False

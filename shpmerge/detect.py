@@ -12,19 +12,23 @@ _RESERVED = {"con", "prn", "aux", "nul",
              *(f"com{i}" for i in range(1, 10)), *(f"lpt{i}" for i in range(1, 10))}
 
 
-def normalize_name(stem: str) -> str:
-    """Hanya: NFKC, strip, hapus '.shp' jika ada, casefold.
-    Token LN/AR/25K/50K dsb sengaja TIDAK disentuh."""
+def normalize_name(stem: str, aliases: dict[str, str] | None = None) -> str:
+    """Normalize formatting and apply optional whole-name category aliases."""
     s = unicodedata.normalize("NFKC", stem).strip()
     if s.lower().endswith(".shp"):
         s = s[:-4]
-    return s.casefold()
+    s = s.casefold()
+    if aliases:
+        s = aliases.get(s, s)
+        for old, new in sorted(aliases.items(), key=lambda item: len(item[0]), reverse=True):
+            s = re.sub(rf"(?<!\w){re.escape(old)}(?!\w)", lambda _: new, s)
+    return s
 
 
-def group_files(files: list[SourceFile]) -> dict[str, list[SourceFile]]:
+def group_files(files: list[SourceFile], aliases: dict[str, str] | None = None) -> dict[str, list[SourceFile]]:
     groups: dict[str, list[SourceFile]] = defaultdict(list)
     for f in files:
-        f.key = normalize_name(f.stem)
+        f.key = normalize_name(f.stem, aliases)
         groups[f.key].append(f)
     return {k: sorted(v, key=lambda x: x.rel.casefold()) for k, v in groups.items()}
 

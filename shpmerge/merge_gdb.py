@@ -107,6 +107,7 @@ def _write_group(g: Group, o: Options, temporary: Path) -> tuple[int, int]:
 
 def merge_gdb_tree(input_path: Path, output_root: Path, *, categories: list[str] | None = None,
                    exclude_categories: list[str] | None = None,
+                   category_aliases: dict[str, str] | None = None,
                    dry_run: bool = False, overwrite: bool = False,
                    chunk_size: int = 50_000, target_crs: str | None = None,
                    include_single: bool = False, add_source_fields: bool = True,
@@ -119,9 +120,10 @@ def merge_gdb_tree(input_path: Path, output_root: Path, *, categories: list[str]
     gdbs = _discover_gdbs(input_path, output_root)
     if not gdbs:
         raise FileNotFoundError(f"tidak ditemukan direktori .gdb di {input_path}")
-    wanted = {normalize_name(Path(name).stem if Path(name).suffix.casefold() == ".gdb" else name)
+    aliases = {normalize_name(k): normalize_name(v) for k, v in (category_aliases or {}).items()}
+    wanted = {normalize_name(Path(name).stem if Path(name).suffix.casefold() == ".gdb" else name, aliases)
               for name in (categories or [])}
-    excluded = {normalize_name(Path(name).stem if Path(name).suffix.casefold() == ".gdb" else name)
+    excluded = {normalize_name(Path(name).stem if Path(name).suffix.casefold() == ".gdb" else name, aliases)
                 for name in (exclude_categories or [])}
     grouped: dict[str, list[SourceFile]] = defaultdict(list)
     excluded_found: set[str] = set()
@@ -137,7 +139,7 @@ def merge_gdb_tree(input_path: Path, output_root: Path, *, categories: list[str]
                 for layer, geometry in layers:
                     if geometry is None:
                         continue
-                    key = normalize_name(str(layer))
+                    key = normalize_name(str(layer), aliases)
                     if key in excluded:
                         excluded_found.add(key)
                         continue
@@ -168,6 +170,7 @@ def merge_gdb_tree(input_path: Path, output_root: Path, *, categories: list[str]
                    overwrite=overwrite, target_crs=target_crs,
                    include_single=include_single, add_source_fields=add_source_fields,
                    categories=categories or [], strict_schema=strict_schema,
+                   category_aliases=aliases,
                    allow_schema_union=allow_schema_union, allow_unknown_crs=allow_unknown_crs,
                    skip_bad_files=skip_bad_files, chunk_size=chunk_size,
                    dissolve=dissolve, dissolve_ignore=dissolve_ignore or [],

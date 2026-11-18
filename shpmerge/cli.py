@@ -48,6 +48,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="tambah SRC_REGION & SRC_FILE (nonaktifkan: --no-add-source-fields)")
     p.add_argument("--report", help="path laporan JSON (CSV disimpan di sebelahnya)")
     p.add_argument("--category", action="append", default=[], help="filter kategori (boleh berulang)")
+    p.add_argument("--category-alias", action="append", default=[], metavar="LAMA=BARU",
+                   help="satukan nama kategori ke nama kanonis (boleh berulang), mis. PEMUKIMAN_AR_50K=PERMUKIMAN_AR_50K")
     p.add_argument("--exclude-category", action="append", default=[],
                    help="lewati kategori pada --merge-gdb (boleh berulang)")
     p.add_argument("--strict-schema", action="store_true", help="skema harus identik (nama, tipe, urutan)")
@@ -101,6 +103,12 @@ def print_summary(r: dict) -> None:
 def main(argv=None) -> int:
     parser = build_parser()
     a = parser.parse_args(argv)
+    aliases = {}
+    for item in a.category_alias:
+        old, sep, new = item.partition("=")
+        if not sep or not old.strip() or not new.strip():
+            parser.error(f"alias kategori harus berbentuk LAMA=BARU: {item}")
+        aliases[old.strip()] = new.strip()
     if a.exclude_category and not a.merge_gdb:
         parser.error("--exclude-category hanya berlaku dengan --merge-gdb")
     logging.basicConfig(level=logging.DEBUG if a.verbose else logging.WARNING,
@@ -134,6 +142,7 @@ def main(argv=None) -> int:
                 "Merge GDB",
                 lambda: merge_gdb_tree(inp, out, categories=a.category,
                                        exclude_categories=a.exclude_category, dry_run=a.dry_run,
+                                       category_aliases=aliases,
                                        overwrite=a.overwrite, chunk_size=a.chunk_size,
                                        target_crs=a.target_crs, include_single=a.include_single,
                                        add_source_fields=a.add_source_fields,
@@ -181,6 +190,7 @@ def main(argv=None) -> int:
                 target_crs=a.target_crs, include_single=a.include_single,
                 add_source_fields=a.add_source_fields,
                 report=Path(a.report) if a.report else None, categories=a.category,
+                category_aliases=aliases,
                 strict_schema=a.strict_schema, allow_schema_union=a.allow_schema_union,
                 allow_unknown_crs=a.allow_unknown_crs, skip_bad_files=a.skip_bad_files,
                 suggest_similar=a.suggest_similar, chunk_size=a.chunk_size,
