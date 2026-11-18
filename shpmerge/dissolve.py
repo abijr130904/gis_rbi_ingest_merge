@@ -174,7 +174,8 @@ def dissolve_group(g: Group, o: Options, out_dir: Path) -> None:
             g.warnings.append(f"DISSOLVE: {int(bad.sum())} geometri invalid diperbaiki (make_valid) "
                               "hanya pada file dissolve; file gabungan tidak diubah")
             geom.loc[bad] = geom.loc[bad].make_valid()
-        progress.update(label="Tahap 3/3 Dissolve: agregasi atribut")
+        progress.update(label=("Tahap 3/3 Dissolve: siapkan overlap" if o.dissolve_overlap_only
+                              else "Tahap 3/3 Dissolve: agregasi atribut"))
 
         ignore = MEASURE_COLS | {c.casefold() for c in o.dissolve_ignore}
         attr_cols = [c for c in gdf.columns if c != gname]
@@ -192,13 +193,18 @@ def dissolve_group(g: Group, o: Options, out_dir: Path) -> None:
             count_col = f"JML_FITUR_DISS_{suffix}"
             suffix += 1
 
-        # tahap 1: per file sumber + atribut identik
+        # Default: tahap 1 menggabungkan geometri per sumber + atribut identik.
+        # Input yang sudah pernah didissolve dapat melewati tahap mahal ini dan
+        # hanya menjalankan deteksi overlap lintas fitur.
         d = gdf[key_cols].copy()
         d[gname] = geom
         d = gpd.GeoDataFrame(d, geometry=gname, crs=gdf.crs)
         d[count_col] = 1
-        res = d.dissolve(by=key_cols, aggfunc={count_col: "sum"}, as_index=False, dropna=False)
-        res[gname] = res.geometry.apply(_polygons_only)
+        if o.dissolve_overlap_only:
+            res = d
+        else:
+            res = d.dissolve(by=key_cols, aggfunc={count_col: "sum"}, as_index=False, dropna=False)
+            res[gname] = res.geometry.apply(_polygons_only)
         res = res[res.geometry.notna() & ~res.geometry.is_empty].reset_index(drop=True)
         if res.empty:
             raise ValueError("hasil dissolve kosong")

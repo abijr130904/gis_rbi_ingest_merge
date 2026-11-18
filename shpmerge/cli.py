@@ -72,6 +72,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dissolve-overlap-min", type=float, default=0.01,
                    help="irisan minimum sebagai pecahan luas bentuk terkecil agar dianggap tumpang tindih "
                         "(bawaan 0.01 = 1%%; 0 = semua irisan berluas positif)")
+    p.add_argument("--dissolve-overlap-only", action="store_true",
+                   help="lewati dissolve atribut penuh; hanya satukan geometri yang tumpang tindih")
     p.add_argument("--verbose", action="store_true")
     return p
 
@@ -153,7 +155,8 @@ def main(argv=None) -> int:
                                        dissolve=a.dissolve,
                                        dissolve_ignore=[c.strip() for c in a.dissolve_ignore.split(",") if c.strip()],
                                        dissolve_overlap=a.dissolve_overlap,
-                                       dissolve_overlap_min=a.dissolve_overlap_min),
+                                       dissolve_overlap_min=a.dissolve_overlap_min,
+                                       dissolve_overlap_only=a.dissolve_overlap_only),
             )
         except Exception as exc:
             parser.error(f"merge GDB gagal: {exc}")
@@ -198,7 +201,8 @@ def main(argv=None) -> int:
                 dissolve=a.dissolve,
                 dissolve_ignore=[c.strip() for c in a.dissolve_ignore.split(",") if c.strip()],
                 dissolve_overlap=a.dissolve_overlap,
-                dissolve_overlap_min=a.dissolve_overlap_min)
+                dissolve_overlap_min=a.dissolve_overlap_min,
+                dissolve_overlap_only=a.dissolve_overlap_only)
 
     result = _with_running_indicator("Pemrosesan Shapefile", lambda: run_pipeline(o))
     print_summary(result)

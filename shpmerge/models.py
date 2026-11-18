@@ -31,6 +31,7 @@ class Options:
     dissolve_ignore: list[str] = field(default_factory=list)
     dissolve_overlap: bool = True
     dissolve_overlap_min: float = 0.01
+    dissolve_overlap_only: bool = False
 
 
 @dataclass

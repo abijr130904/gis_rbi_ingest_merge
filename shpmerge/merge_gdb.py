@@ -115,7 +115,8 @@ def merge_gdb_tree(input_path: Path, output_root: Path, *, categories: list[str]
                    allow_unknown_crs: bool = False, skip_bad_files: bool = False,
                    dissolve: bool = True, dissolve_ignore: list[str] | None = None,
                    dissolve_overlap: bool = True,
-                   dissolve_overlap_min: float = 0.01) -> list[tuple[str, int, int | None, int | None, str]]:
+                   dissolve_overlap_min: float = 0.01,
+                   dissolve_overlap_only: bool = False) -> list[tuple[str, int, int | None, int | None, str]]:
     """Merge same-named GDB layers using the shared SHP category validation rules."""
     gdbs = _discover_gdbs(input_path, output_root)
     if not gdbs:
@@ -175,7 +176,8 @@ def merge_gdb_tree(input_path: Path, output_root: Path, *, categories: list[str]
                    skip_bad_files=skip_bad_files, chunk_size=chunk_size,
                    dissolve=dissolve, dissolve_ignore=dissolve_ignore or [],
                    dissolve_overlap=dissolve_overlap,
-                   dissolve_overlap_min=dissolve_overlap_min)
+                   dissolve_overlap_min=dissolve_overlap_min,
+                   dissolve_overlap_only=dissolve_overlap_only)
     if target_crs:
         CRS.from_user_input(target_crs)
     groups = [Group(key=k, files=sorted(v, key=lambda f: f.rel.casefold()),
