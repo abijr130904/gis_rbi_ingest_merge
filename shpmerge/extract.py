@@ -209,7 +209,7 @@ def _find_sources(root: Path, output_root: Path,
 
 def _extract_one(source: Path | str, output_dir: Path, *, overwrite: bool,
                  dry_run: bool, categories: list[str] | None,
-                 chunk_size: int) -> list[tuple[str, int, str]]:
+                 chunk_size: int, skip_bad_files: bool = False) -> list[tuple[str, int, str]]:
     source_ref = str(source)
     layers = sorted((str(name), geom) for name, geom in list_layers(source_ref)
                     if geom is not None)
@@ -230,65 +230,75 @@ def _extract_one(source: Path | str, output_dir: Path, *, overwrite: bool,
     for layer, geom_type in layers:
         filename = safe_output_name(layer)
         dest = output_dir / f"{filename}.gdb"
-        info = read_info(source_ref, layer=layer)
-        feature_count = int(info["features"])
-        if dest.exists() and not overwrite:
-            try:
+        writing_started = False
+        try:
+            info = read_info(source_ref, layer=layer)
+            feature_count = int(info["features"])
+            if dest.exists() and not overwrite:
                 existing = [(str(name), geom) for name, geom in list_layers(str(dest))
                             if geom is not None]
                 if (len(existing) == 1 and existing[0][0].casefold() == filename.casefold()
                         and int(read_info(str(dest), layer=existing[0][0])["features"]) == feature_count):
                     results.append((layer, feature_count, str(dest)))
                     continue
-            except Exception:
-                pass
-            raise FileExistsError(
-                f"output sudah ada tetapi belum lengkap: {dest} (gunakan --overwrite untuk mengulang)"
-            )
+                raise FileExistsError(
+                    f"output sudah ada tetapi belum lengkap: {dest} (gunakan --overwrite untuk mengulang)"
+                )
 
-        results.append((layer, feature_count, str(dest)))
-        if dry_run:
-            continue
-        output_dir.mkdir(parents=True, exist_ok=True)
-        if dest.exists():
-            shutil.rmtree(dest)
+            if dry_run:
+                results.append((layer, feature_count, str(dest)))
+                continue
+            output_dir.mkdir(parents=True, exist_ok=True)
+            writing_started = True
+            if dest.exists():
+                shutil.rmtree(dest)
 
-        starts = range(0, feature_count, chunk_size) if feature_count else (0,)
-        with ProgressBar(feature_count, f"Ekstrak {layer}") as progress:
-            for start in starts:
-                frame = read_dataframe(source_ref, layer=layer, skip_features=start,
-                                       max_features=chunk_size)
-                # Source FileGDBs can store their FID as a physical field. Reusing
-                # that field on write makes OpenFileGDB interpret its value as the
-                # destination FID, which only supports positive 32-bit integers.
-                # Let the destination assign fresh FIDs instead.
-                fid_column = info.get("fid_column")
-                if fid_column and fid_column in frame.columns:
-                    frame = frame.drop(columns=[fid_column])
-                try:
-                    write_dataframe(frame, str(dest), layer=filename, driver="OpenFileGDB",
-                                    append=start > 0, geometry_type=geom_type)
-                except Exception as exc:
-                    raise RuntimeError(
-                        f"gagal menulis layer {layer!r} (geometri {geom_type!r}, chunk mulai {start}): {exc}"
-                    ) from exc
-                progress.update(len(frame))
+            starts = range(0, feature_count, chunk_size) if feature_count else (0,)
+            with ProgressBar(feature_count, f"Ekstrak {layer}") as progress:
+                for start in starts:
+                    frame = read_dataframe(source_ref, layer=layer, skip_features=start,
+                                           max_features=chunk_size)
+                    # Source FileGDBs can store their FID as a physical field. Reusing
+                    # that field on write makes OpenFileGDB interpret its value as the
+                    # destination FID, which only supports positive 32-bit integers.
+                    # Let the destination assign fresh FIDs instead.
+                    fid_column = info.get("fid_column")
+                    if fid_column and fid_column in frame.columns:
+                        frame = frame.drop(columns=[fid_column])
+                    try:
+                        write_dataframe(frame, str(dest), layer=filename, driver="OpenFileGDB",
+                                        append=start > 0, geometry_type=geom_type)
+                    except Exception as exc:
+                        raise RuntimeError(
+                            f"gagal menulis layer {layer!r} (geometri {geom_type!r}, "
+                            f"chunk mulai {start}): {exc}"
+                        ) from exc
+                    progress.update(len(frame))
+            results.append((layer, feature_count, str(dest)))
+        except Exception as exc:
+            if writing_started and not dry_run:
+                shutil.rmtree(dest, ignore_errors=True)
+            if not skip_bad_files:
+                if isinstance(exc, (FileExistsError, ValueError)):
+                    raise
+                raise RuntimeError(f"gagal mengekstrak layer {layer!r}: {exc}") from exc
+            log.warning("Lewati layer %s dari %s: %s", layer, source_ref, exc)
     return results
 
 
 def extract_gdb_tree(input_path: Path, output_root: Path, *, overwrite: bool = False,
                      dry_run: bool = False, categories: list[str] | None = None,
-                     chunk_size: int = 50_000) -> list[tuple[str, int, str]]:
+                     chunk_size: int = 50_000, skip_bad_files: bool = False) -> list[tuple[str, int, str]]:
     with tempfile.TemporaryDirectory(prefix="shpmerge_archives_") as temporary:
         sources = _find_sources(input_path, output_root, Path(temporary))
         return _extract_sources(sources, output_root, overwrite=overwrite,
                                 dry_run=dry_run, categories=categories,
-                                chunk_size=chunk_size)
+                                chunk_size=chunk_size, skip_bad_files=skip_bad_files)
 
 
 def _extract_sources(sources: list[tuple[Path | str, Path]], output_root: Path, *,
                      overwrite: bool, dry_run: bool, categories: list[str] | None,
-                     chunk_size: int) -> list[tuple[str, int, str]]:
+                     chunk_size: int, skip_bad_files: bool = False) -> list[tuple[str, int, str]]:
     if not sources:
         raise FileNotFoundError("tidak ditemukan GDB, SHP, atau data spasial dalam arsip")
 
@@ -303,11 +313,15 @@ def _extract_sources(sources: list[tuple[Path | str, Path]], output_root: Path, 
     for source, relative_dir in sources:
         try:
             found = _extract_one(source, output_root / relative_dir, overwrite=overwrite,
-                                 dry_run=dry_run, categories=categories, chunk_size=chunk_size)
+                                 dry_run=dry_run, categories=categories, chunk_size=chunk_size,
+                                 skip_bad_files=skip_bad_files)
             results.extend(found)
             if not found:
                 log.info("Tidak ada layer spasial yang cocok pada %s", source)
         except Exception as exc:
+            if skip_bad_files:
+                log.warning("Lewati sumber %s: %s", source, exc)
+                continue
             if isinstance(source, str):
                 raise RuntimeError(f"gagal membaca data di dalam arsip {source}: {exc}") from exc
             raise

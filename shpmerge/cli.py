@@ -125,7 +125,8 @@ def main(argv=None) -> int:
             results = _with_running_indicator(
                 "Ekstraksi GDB",
                 lambda: extract_gdb_tree(inp, out, overwrite=a.overwrite, dry_run=a.dry_run,
-                                         categories=a.category, chunk_size=a.chunk_size),
+                                         categories=a.category, chunk_size=a.chunk_size,
+                                         skip_bad_files=a.skip_bad_files),
             )
         except Exception as exc:
             parser.error(f"ekstrak GDB gagal: {exc}")
