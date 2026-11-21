@@ -13,7 +13,7 @@ from pyogrio import list_layers, read_dataframe, read_info, write_dataframe
 from pyproj import CRS
 import shapely
 from .detect import normalize_name, safe_output_name
-from .dissolve import dissolve_group
+from .dissolve import dissolve_group, is_polygon_group
 from .models import Group, Options, SourceFile
 from .progress import ProgressBar
 from .validate import crs_equal, normalized_geometry_type, validate_group
@@ -40,7 +40,8 @@ def _discover_gdbs(input_path: Path, output_root: Path) -> list[Path]:
     return sorted(set(found), key=lambda p: str(p).casefold())
 
 
-def _write_group(g: Group, o: Options, temporary: Path) -> tuple[int, int]:
+def _write_group(g: Group, o: Options, temporary: Path,
+                 progress_callback=None) -> tuple[int, int]:
     try:
         written = 0
         source_read = 0
@@ -97,6 +98,13 @@ def _write_group(g: Group, o: Options, temporary: Path) -> tuple[int, int]:
                                     geometry_type=output_geometry_type)
                     written += len(frame)
                     progress.update(min(start + o.chunk_size, sf.features) - min(start, sf.features))
+                    if progress_callback is not None:
+                        done = source_read
+                        total = g.total_features
+                        progress_callback(
+                            f"Tahap 2/3 gabung {g.key}: {done:,}/{total:,} fitur sumber"
+                            .replace(",", ".")
+                        )
                     log.info("  %s: %d/%d fitur (total tertulis %d)", sf.rel,
                              min(start + o.chunk_size, sf.features), sf.features, written)
         return source_read, written
@@ -116,7 +124,8 @@ def merge_gdb_tree(input_path: Path, output_root: Path, *, categories: list[str]
                    dissolve: bool = True, dissolve_ignore: list[str] | None = None,
                    dissolve_overlap: bool = True,
                    dissolve_overlap_min: float = 0.01,
-                   dissolve_overlap_only: bool = False) -> list[tuple[str, int, int | None, int | None, str]]:
+                   dissolve_overlap_only: bool = False,
+                   progress_callback=None) -> list[tuple[str, int, int | None, int | None, str]]:
     """Merge same-named GDB layers using the shared SHP category validation rules."""
     gdbs = _discover_gdbs(input_path, output_root)
     if not gdbs:
@@ -130,7 +139,7 @@ def merge_gdb_tree(input_path: Path, output_root: Path, *, categories: list[str]
     excluded_found: set[str] = set()
     inventory_progress = ProgressBar(len(gdbs), "Tahap 1/3: Inventarisasi GDB", unit="GDB")
     try:
-        for gdb in gdbs:
+        for gdb_index, gdb in enumerate(gdbs, start=1):
             try:
                 try:
                     layers = list_layers(str(gdb))
@@ -157,6 +166,11 @@ def merge_gdb_tree(input_path: Path, output_root: Path, *, categories: list[str]
                     grouped[key].append(sf)
             finally:
                 inventory_progress.update()
+                if progress_callback is not None:
+                    progress_callback(
+                        f"Tahap 1/3 inventarisasi GDB: {gdb_index:,}/{len(gdbs):,}"
+                        .replace(",", ".")
+                    )
     finally:
         inventory_progress.close()
     missing = sorted((wanted - excluded) - set(grouped))
@@ -183,13 +197,17 @@ def merge_gdb_tree(input_path: Path, output_root: Path, *, categories: list[str]
     groups = [Group(key=k, files=sorted(v, key=lambda f: f.rel.casefold()),
                     out_name=safe_output_name(k)) for k, v in sorted(grouped.items())]
     results: list[tuple[str, int, int | None, int | None, str]] = []
+    merged_groups: list[tuple[Group, int, int, Path]] = []
     output_root = output_root.resolve()
     if not dry_run:
         output_root.mkdir(parents=True, exist_ok=True)
         mode = pyogrio.list_drivers().get("OpenFileGDB", "")
         if "w" not in mode.casefold():
             raise RuntimeError(f"driver OpenFileGDB tidak mendukung tulis (status={mode!r})")
-    for g in groups:
+    # Polygon layers can trigger expensive geometry work after merge. Process
+    # all non-polygon categories first so they complete before polygon merges.
+    processing_groups = groups if dry_run else sorted(groups, key=is_polygon_group)
+    for g in processing_groups:
         validate_group(g, opts)
         dest = output_root / f"{g.out_name}.gdb"
         count = g.total_features
@@ -214,7 +232,7 @@ def merge_gdb_tree(input_path: Path, output_root: Path, *, categories: list[str]
             log.warning("Output sudah ada, kategori dilewati %s: %s (gunakan --overwrite)", g.key, dest)
             continue
         temporary = dest.with_name(f".{dest.stem}.tmp_{uuid.uuid4().hex[:8]}.gdb")
-        source_read, written = _write_group(g, group_options, temporary)
+        source_read, written = _write_group(g, group_options, temporary, progress_callback)
         if source_read != count:
             shutil.rmtree(temporary, ignore_errors=True)
             raise RuntimeError(f"fitur sumber terbaca {source_read} != {count} untuk kategori {g.key}")
@@ -256,6 +274,23 @@ def merge_gdb_tree(input_path: Path, output_root: Path, *, categories: list[str]
         if moved_old:
             shutil.rmtree(backup, ignore_errors=True)
         g.status, g.output, g.output_features = "MERGED", str(dest), written
+        merged_groups.append((g, count, written, dest))
+
+    # Finish every category merge before starting potentially expensive polygon
+    # dissolves, so one complex geometry cannot hold up the remaining merges.
+    if progress_callback is not None and merged_groups:
+        progress_callback(
+            f"Tahap 2/3 gabung selesai: {len(merged_groups):,} kategori; "
+            "mulai tahap dissolve"
+            .replace(",", ".")
+        )
+    for g, count, written, dest in merged_groups:
+        if progress_callback is not None and opts.dissolve and is_polygon_group(g):
+            progress_callback(
+                f"Tahap 3/3 dissolve {g.key}: {count:,}/{count:,} fitur merge; "
+                "validasi dan cek overlap"
+                .replace(",", ".")
+            )
         dissolve_group(g, opts, output_root)
         results.append((g.key, count, written, g.output_features or written, str(dest)))
     return results

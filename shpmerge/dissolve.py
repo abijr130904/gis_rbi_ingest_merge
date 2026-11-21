@@ -58,7 +58,26 @@ def _polygons_only(geom):
     return shapely.MultiPolygon(polys) if polys else None
 
 
-def _overlap_components(geoms, min_ratio: float) -> list[int]:
+def _polygon_parts(geom):
+    """Flatten geometri menjadi Polygon agar indeks tidak memakai bbox MultiPolygon besar."""
+    if geom is None or geom.is_empty:
+        return []
+    if geom.geom_type == "Polygon":
+        return [geom]
+    parts = []
+    pending = [geom]
+    while pending:
+        current = pending.pop()
+        if current is None or current.is_empty:
+            continue
+        if current.geom_type == "Polygon":
+            parts.append(current)
+        elif current.geom_type in {"MultiPolygon", "GeometryCollection"}:
+            pending.extend(reversed(shapely.get_parts(current)))
+    return parts
+
+
+def _overlap_components(geoms, min_ratio: float, progress: ProgressBar | None = None) -> list[int]:
     """Label komponen: bentuk yang saling tumpang tindih (luas irisan > min_ratio x luas
     bentuk terkecil) berbagi label. Hanya bersentuhan di perbatasan TIDAK dihitung."""
     n = len(geoms)
@@ -70,38 +89,65 @@ def _overlap_components(geoms, min_ratio: float) -> list[int]:
             x = parent[x]
         return x
 
+    # Index individual polygon parts. A multipart feature can have a huge bbox
+    # even when its parts are far apart, which otherwise creates many false
+    # candidates and expensive intersections.
+    part_geoms, owners = [], []
+    for owner, geom in enumerate(geoms):
+        parts = _polygon_parts(geom)
+        part_geoms.extend(parts)
+        owners.extend([owner] * len(parts))
+    if not part_geoms:
+        return list(range(n))
+
+    part_geoms = np.asarray(part_geoms, dtype=object)
+    owners = np.asarray(owners, dtype=np.int64)
+    tree = STRtree(part_geoms)
     areas = shapely.area(geoms) if min_ratio > 0 else None
-    tree = STRtree(geoms)
-    # Query in batches to cap temporary memory on large polygon layers.
-    # Shapely/GEOS vectorizes the expensive predicate/overlay work; Python only
-    # handles the comparatively small union-find step for candidate pairs.
+    # Query and overlay in bounded batches. Aggregate part intersection areas
+    # by original feature pair before applying the exact existing threshold.
     batch_size = 10_000
-    for start in range(0, n, batch_size):
-        left, right = tree.query(geoms[start:start + batch_size], predicate="intersects")
+    pair_areas: dict[tuple[int, int], float] = {}
+    for start in range(0, len(part_geoms), batch_size):
+        left, right = tree.query(part_geoms[start:start + batch_size], predicate="intersects")
         left = left + start
         forward = left < right
         left, right = left[forward], right[forward]
-        if not len(left):
-            continue
+        if len(left):
+            owner_left, owner_right = owners[left], owners[right]
+            distinct_features = owner_left != owner_right
+            left, right = left[distinct_features], right[distinct_features]
+            owner_left, owner_right = owner_left[distinct_features], owner_right[distinct_features]
+            if len(left):
+                lo = np.minimum(owner_left, owner_right)
+                hi = np.maximum(owner_left, owner_right)
+                keys = lo * n + hi
+                if min_ratio == 0:
+                    overlaps = shapely.relate_pattern(part_geoms[left], part_geoms[right], "2********")
+                    for key in np.unique(keys[overlaps]):
+                        i, j = divmod(int(key), n)
+                        root_i, root_j = find(i), find(j)
+                        if root_i != root_j:
+                            parent[root_i] = root_j
+                else:
+                    intersection_areas = shapely.area(
+                        shapely.intersection(part_geoms[left], part_geoms[right])
+                    )
+                    unique_keys, inverse = np.unique(keys, return_inverse=True)
+                    sums = np.bincount(inverse, weights=intersection_areas)
+                    for key, area in zip(unique_keys, sums):
+                        pair = divmod(int(key), n)
+                        pair_areas[pair] = pair_areas.get(pair, 0.0) + float(area)
+        if progress is not None:
+            progress.update(min(batch_size, len(part_geoms) - start))
 
-        if min_ratio == 0:
-            # For valid polygons, interior-interior intersection dimension 2
-            # means positive-area overlap. This avoids constructing intersection
-            # geometries just to measure their area.
-            overlaps = shapely.relate_pattern(geoms[left], geoms[right], "2********")
-        else:
-            smaller = np.minimum(areas[left], areas[right])
-            positive_area = smaller > 0
-            if not positive_area.any():
-                continue
-            left, right, smaller = left[positive_area], right[positive_area], smaller[positive_area]
-            intersection_areas = shapely.area(shapely.intersection(geoms[left], geoms[right]))
-            overlaps = intersection_areas > min_ratio * smaller
-
-        for i, j in zip(left[overlaps], right[overlaps]):
-            root_i, root_j = find(int(i)), find(int(j))
-            if root_i != root_j:
-                parent[root_i] = root_j
+    if min_ratio > 0:
+        for (i, j), intersection_area in pair_areas.items():
+            smaller = min(float(areas[i]), float(areas[j]))
+            if smaller > 0 and intersection_area > min_ratio * smaller:
+                root_i, root_j = find(i), find(j)
+                if root_i != root_j:
+                    parent[root_i] = root_j
     return [find(i) for i in range(n)]
 
 
@@ -234,7 +280,12 @@ def dissolve_group(g: Group, o: Options, out_dir: Path) -> None:
         # tahap 2: satukan bentuk yang saling tumpang tindih
         n_rows = len(res)
         if o.dissolve_overlap and n_rows > 1:
-            labels = _overlap_components(res.geometry.to_numpy(), o.dissolve_overlap_min)
+            overlap_parts = sum(len(_polygon_parts(geom)) for geom in res.geometry.to_numpy())
+            with ProgressBar(overlap_parts, "Tahap 3/3 Dissolve: cek overlap",
+                             unit="bagian geometri") as overlap_progress:
+                labels = _overlap_components(
+                    res.geometry.to_numpy(), o.dissolve_overlap_min, overlap_progress
+                )
             n_comp = len(set(labels))
             if n_comp < n_rows:
                 res, n_mixed = _merge_components(res, labels, key_cols, count_col)

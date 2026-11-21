@@ -17,16 +17,24 @@ from .merge_gdb import merge_gdb_tree
 def _with_running_indicator(label: str, operation):
     """Cetak heartbeat selama operasi panjang agar CLI tidak tampak macet."""
     stop = threading.Event()
+    status_lock = threading.Lock()
+    status = ["menyiapkan"]
+
+    def update_status(message: str):
+        with status_lock:
+            status[0] = message
 
     def heartbeat():
         while not stop.wait(15):
-            print(f"[{datetime.now():%H:%M:%S}] {label} masih berjalan...", file=sys.stderr, flush=True)
+            with status_lock:
+                detail = status[0]
+            print(f"[{datetime.now():%H:%M:%S}] {label}: {detail}", file=sys.stderr, flush=True)
 
     thread = threading.Thread(target=heartbeat, daemon=True)
     print(f"{label} berjalan...", file=sys.stderr, flush=True)
     thread.start()
     try:
-        return operation()
+        return operation(update_status)
     finally:
         stop.set()
         thread.join()
@@ -124,9 +132,9 @@ def main(argv=None) -> int:
         try:
             results = _with_running_indicator(
                 "Ekstraksi GDB",
-                lambda: extract_gdb_tree(inp, out, overwrite=a.overwrite, dry_run=a.dry_run,
-                                         categories=a.category, chunk_size=a.chunk_size,
-                                         skip_bad_files=a.skip_bad_files),
+                lambda _status: extract_gdb_tree(inp, out, overwrite=a.overwrite, dry_run=a.dry_run,
+                                                  categories=a.category, chunk_size=a.chunk_size,
+                                                  skip_bad_files=a.skip_bad_files),
             )
         except Exception as exc:
             parser.error(f"ekstrak GDB gagal: {exc}")
@@ -143,7 +151,7 @@ def main(argv=None) -> int:
         try:
             results = _with_running_indicator(
                 "Merge GDB",
-                lambda: merge_gdb_tree(inp, out, categories=a.category,
+                lambda status: merge_gdb_tree(inp, out, categories=a.category,
                                        exclude_categories=a.exclude_category, dry_run=a.dry_run,
                                        category_aliases=aliases,
                                        overwrite=a.overwrite, chunk_size=a.chunk_size,
@@ -157,7 +165,8 @@ def main(argv=None) -> int:
                                        dissolve_ignore=[c.strip() for c in a.dissolve_ignore.split(",") if c.strip()],
                                        dissolve_overlap=a.dissolve_overlap,
                                        dissolve_overlap_min=a.dissolve_overlap_min,
-                                       dissolve_overlap_only=a.dissolve_overlap_only),
+                                       dissolve_overlap_only=a.dissolve_overlap_only,
+                                       progress_callback=status),
             )
         except Exception as exc:
             parser.error(f"merge GDB gagal: {exc}")
@@ -205,7 +214,7 @@ def main(argv=None) -> int:
                 dissolve_overlap_min=a.dissolve_overlap_min,
                 dissolve_overlap_only=a.dissolve_overlap_only)
 
-    result = _with_running_indicator("Pemrosesan Shapefile", lambda: run_pipeline(o))
+    result = _with_running_indicator("Pemrosesan Shapefile", lambda _status: run_pipeline(o))
     print_summary(result)
     report = o.report
     if report is None and not o.dry_run:
